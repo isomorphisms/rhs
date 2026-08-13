@@ -1126,6 +1126,105 @@ expand_complex_libcall (gimple_stmt_iterator *gsi, tree type, tree ar, tree ai,
   return lhs;
 }
 
+/* This experimental fork uses a polar working representation for floating
+   complex multiplication and division.  The public C object representation
+   remains a pair of real and imaginary components at this pass boundary; a
+   physical ABI change requires all component extraction, construction, call,
+   constant-folding, and library boundaries to change together.  */
+
+static bool
+polar_math_builtins_available (tree type)
+{
+  return (mathfn_built_in (type, BUILT_IN_HYPOT)
+	  && mathfn_built_in (type, BUILT_IN_ATAN2)
+	  && mathfn_built_in (type, BUILT_IN_COS)
+	  && mathfn_built_in (type, BUILT_IN_SIN));
+}
+
+static tree
+build_polar_unary_call (gimple_seq *stmts, location_t loc, tree type,
+			enum built_in_function code, tree arg)
+{
+  tree fn = mathfn_built_in (type, code);
+  tree lhs = make_ssa_name (type);
+  gcall *call = gimple_build_call (fn, 1, arg);
+
+  gimple_set_location (call, loc);
+  gimple_call_set_nothrow (call, true);
+  gimple_call_set_lhs (call, lhs);
+  gimple_seq_add_stmt (stmts, call);
+  return lhs;
+}
+
+static tree
+build_polar_binary_call (gimple_seq *stmts, location_t loc, tree type,
+			 enum built_in_function code, tree arg0, tree arg1)
+{
+  tree fn = mathfn_built_in (type, code);
+  tree lhs = make_ssa_name (type);
+  gcall *call = gimple_build_call (fn, 2, arg0, arg1);
+
+  gimple_set_location (call, loc);
+  gimple_call_set_nothrow (call, true);
+  gimple_call_set_lhs (call, lhs);
+  gimple_seq_add_stmt (stmts, call);
+  return lhs;
+}
+
+static void
+expand_complex_multiplication_polar (gimple_seq *stmts, location_t loc,
+				     tree type, tree ar, tree ai,
+				     tree br, tree bi,
+				     tree *rr, tree *ri)
+{
+  tree a_radius = build_polar_binary_call (stmts, loc, type,
+					   BUILT_IN_HYPOT, ar, ai);
+  tree b_radius = build_polar_binary_call (stmts, loc, type,
+					   BUILT_IN_HYPOT, br, bi);
+  tree a_angle = build_polar_binary_call (stmts, loc, type,
+					  BUILT_IN_ATAN2, ai, ar);
+  tree b_angle = build_polar_binary_call (stmts, loc, type,
+					  BUILT_IN_ATAN2, bi, br);
+  tree radius = gimple_build (stmts, loc, MULT_EXPR, type,
+			      a_radius, b_radius);
+  tree angle = gimple_build (stmts, loc, PLUS_EXPR, type,
+			     a_angle, b_angle);
+  tree cosine = build_polar_unary_call (stmts, loc, type,
+					BUILT_IN_COS, angle);
+  tree sine = build_polar_unary_call (stmts, loc, type,
+				      BUILT_IN_SIN, angle);
+
+  *rr = gimple_build (stmts, loc, MULT_EXPR, type, radius, cosine);
+  *ri = gimple_build (stmts, loc, MULT_EXPR, type, radius, sine);
+}
+
+static void
+expand_complex_division_polar (gimple_seq *stmts, location_t loc,
+			       tree type, tree ar, tree ai,
+			       tree br, tree bi, enum tree_code code,
+			       tree *rr, tree *ri)
+{
+  tree a_radius = build_polar_binary_call (stmts, loc, type,
+					   BUILT_IN_HYPOT, ar, ai);
+  tree b_radius = build_polar_binary_call (stmts, loc, type,
+					   BUILT_IN_HYPOT, br, bi);
+  tree a_angle = build_polar_binary_call (stmts, loc, type,
+					  BUILT_IN_ATAN2, ai, ar);
+  tree b_angle = build_polar_binary_call (stmts, loc, type,
+					  BUILT_IN_ATAN2, bi, br);
+  tree radius = gimple_build (stmts, loc, code, type,
+			      a_radius, b_radius);
+  tree angle = gimple_build (stmts, loc, MINUS_EXPR, type,
+			     a_angle, b_angle);
+  tree cosine = build_polar_unary_call (stmts, loc, type,
+					BUILT_IN_COS, angle);
+  tree sine = build_polar_unary_call (stmts, loc, type,
+				      BUILT_IN_SIN, angle);
+
+  *rr = gimple_build (stmts, loc, MULT_EXPR, type, radius, cosine);
+  *ri = gimple_build (stmts, loc, MULT_EXPR, type, radius, sine);
+}
+
 /* Perform a complex multiplication on two complex constants A, B represented
    by AR, AI, BR, BI of type TYPE.
    The operation we want is: a * b = (ar*br - ai*bi) + i(ar*bi + br*ai).
@@ -1168,6 +1267,16 @@ expand_complex_multiplication (gimple_stmt_iterator *gsi, tree type,
   tree inner_type = TREE_TYPE (type);
   location_t loc = gimple_location (gsi_stmt (*gsi));
   gimple_seq stmts = NULL;
+
+  if (SCALAR_FLOAT_TYPE_P (inner_type)
+      && polar_math_builtins_available (inner_type))
+    {
+      expand_complex_multiplication_polar (&stmts, loc, inner_type,
+					   ar, ai, br, bi, &rr, &ri);
+      gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+      update_complex_assignment (gsi, rr, ri);
+      return;
+    }
 
   if (al < bl)
     {
@@ -1518,6 +1627,17 @@ expand_complex_division (gimple_stmt_iterator *gsi, tree type,
   location_t loc = gimple_location (gsi_stmt (*gsi));
 
   tree inner_type = TREE_TYPE (type);
+
+  if (SCALAR_FLOAT_TYPE_P (inner_type)
+      && polar_math_builtins_available (inner_type))
+    {
+      expand_complex_division_polar (&stmts, loc, inner_type,
+				     ar, ai, br, bi, code, &rr, &ri);
+      gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+      update_complex_assignment (gsi, rr, ri);
+      return;
+    }
+
   switch (PAIR (al, bl))
     {
     case PAIR (ONLY_REAL, ONLY_REAL):
