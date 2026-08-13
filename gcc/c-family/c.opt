@@ -2696,6 +2696,10 @@ std=c23
 C ObjC
 Conform to the ISO 2023 C standard (published in 2024).
 
+std=c23.=
+C
+Use C23 with '=' (also '==' or '===') for equality and Unicode arrows for assignment.
+
 std=c2x
 C ObjC Alias(std=c23)
 Deprecated in favor of -std=c23.

@@ -747,6 +747,15 @@ c_common_handle_option (size_t scode, const char *arg, HOST_WIDE_INT value,
 	set_std_c23 (true /* ISO */);
       break;
 
+    case OPT_std_c23__:
+      if (!preprocessing_asm_p)
+	{
+	  set_std_c23 (true /* ISO */);
+	  cpp_opts->c23_dot_equals = 1;
+	  lang_hooks.name = "C23.=";
+	}
+      break;
+
     case OPT_std_gnu23:
       if (!preprocessing_asm_p)
 	set_std_c23 (false /* ISO */);
@@ -1894,6 +1903,7 @@ static void
 set_std_c89 (int c94, int iso)
 {
   cpp_set_lang (parse_in, c94 ? CLK_STDC94 : iso ? CLK_STDC89 : CLK_GNUC89);
+  cpp_opts->c23_dot_equals = 0;
   flag_iso = iso;
   flag_no_asm = iso;
   flag_no_gnu_keywords = iso;
@@ -1911,6 +1921,7 @@ static void
 set_std_c99 (int iso)
 {
   cpp_set_lang (parse_in, iso ? CLK_STDC99 : CLK_GNUC99);
+  cpp_opts->c23_dot_equals = 0;
   flag_no_asm = iso;
   flag_no_nonansi_builtin = iso;
   flag_iso = iso;
@@ -1927,6 +1938,7 @@ static void
 set_std_c11 (int iso)
 {
   cpp_set_lang (parse_in, iso ? CLK_STDC11 : CLK_GNUC11);
+  cpp_opts->c23_dot_equals = 0;
   flag_no_asm = iso;
   flag_no_nonansi_builtin = iso;
   flag_iso = iso;
@@ -1943,6 +1955,7 @@ static void
 set_std_c17 (int iso)
 {
   cpp_set_lang (parse_in, iso ? CLK_STDC17 : CLK_GNUC17);
+  cpp_opts->c23_dot_equals = 0;
   flag_no_asm = iso;
   flag_no_nonansi_builtin = iso;
   flag_iso = iso;
@@ -1959,6 +1972,9 @@ static void
 set_std_c23 (int iso)
 {
   cpp_set_lang (parse_in, iso ? CLK_STDC23 : CLK_GNUC23);
+  /* A later -std option wins.  In particular, -std=c23 after
+     -std=c23.= must restore ordinary C tokenization.  */
+  cpp_opts->c23_dot_equals = 0;
   flag_no_asm = iso;
   flag_no_nonansi_builtin = iso;
   flag_iso = iso;
@@ -1975,6 +1991,7 @@ static void
 set_std_c2y (int iso)
 {
   cpp_set_lang (parse_in, iso ? CLK_STDC2Y : CLK_GNUC2Y);
+  cpp_opts->c23_dot_equals = 0;
   flag_no_asm = iso;
   flag_no_nonansi_builtin = iso;
   flag_iso = iso;

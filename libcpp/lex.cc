@@ -4334,7 +4334,31 @@ _cpp_lex_direct (cpp_reader *pfile)
       break;
 
     case '*': IF_NEXT_IS ('=', CPP_MULT_EQ, CPP_MULT); break;
-    case '=': IF_NEXT_IS ('=', CPP_EQ_EQ, CPP_EQ); break;
+    case '=':
+      /* Ordinary C gives one equals sign the unrelated job of assignment
+	 and two equals signs the job of equality.  C23.= makes the written
+	 mathematics literal: '=', '==', and '===' all produce GCC's existing
+	 equality token.  */
+      if (CPP_OPTION (pfile, c23_dot_equals))
+	{
+	  if (*buffer->cur == '=')
+	    {
+	      buffer->cur++;
+	      if (*buffer->cur == '=')
+		{
+		  buffer->cur++;
+		  result->flags |= C23_DOT_EQUALS_TRIPLE;
+		}
+	    }
+	  else
+	    /* Preserve the user's one-character spelling for -E output and
+	       macro stringification, even though the parser receives CPP_EQ_EQ.  */
+	    result->flags |= C23_DOT_EQUALS_EQUAL;
+	  result->type = CPP_EQ_EQ;
+	}
+      else
+	IF_NEXT_IS ('=', CPP_EQ_EQ, CPP_EQ);
+      break;
     case '!': IF_NEXT_IS ('=', CPP_NOT_EQ, CPP_NOT); break;
     case '^':
       result->type = CPP_XOR;
@@ -4405,12 +4429,35 @@ _cpp_lex_direct (cpp_reader *pfile)
 	    cppchar_t s;
 	    if (_cpp_valid_utf8 (pfile, &pstr, buffer->rlimit, 0, NULL, &s))
 	      {
-		if (s > UCS_LIMIT && CPP_OPTION (pfile, cpp_warn_invalid_utf8))
+		if (s > UCS_LIMIT
+		    && CPP_OPTION (pfile, cpp_warn_invalid_utf8))
 		  {
 		    buffer->cur = base;
 		    _cpp_warn_invalid_utf8 (pfile);
 		  }
 		buffer->cur = pstr;
+
+		/* GCC has already decoded the complete UTF-8 character into S.
+		   In C23.= the left arrow reuses CPP_EQ, the token by which the
+		   C parser has always recognized assignment.  The right arrow
+		   needs its own token because its written operands must later be
+		   reversed.  */
+		if (CPP_OPTION (pfile, c23_dot_equals))
+		  {
+		    if (s == 0x2190)       /* ← */
+		      {
+			result->type = CPP_EQ;
+			/* The parser can reuse its ordinary assignment token, while
+			   this flag retains the source spelling for preprocessing.  */
+			result->flags |= C23_DOT_EQUALS_LEFT;
+			break;
+		      }
+		    if (s == 0x2192)       /* → */
+		      {
+			result->type = CPP_RIGHT_ASSIGN;
+			break;
+		      }
+		  }
 	      }
 	    else if (CPP_OPTION (pfile, cpp_warn_invalid_utf8))
 	      {
@@ -4568,6 +4615,12 @@ cpp_spell_token (cpp_reader *pfile, const cpp_token *token,
 	  spelling = cpp_digraph2name (token->type);
 	else if (token->flags & NAMED_OP)
 	  goto spell_ident;
+	else if (token->flags & C23_DOT_EQUALS_LEFT)
+	  spelling = (const unsigned char *) "←";
+	else if (token->flags & C23_DOT_EQUALS_EQUAL)
+	  spelling = (const unsigned char *) "=";
+	else if (token->flags & C23_DOT_EQUALS_TRIPLE)
+	  spelling = (const unsigned char *) "===";
 	else
 	  spelling = TOKEN_NAME (token);
 
@@ -4647,6 +4700,12 @@ cpp_output_token (const cpp_token *token, FILE *fp)
 	  spelling = cpp_digraph2name (token->type);
 	else if (token->flags & NAMED_OP)
 	  goto spell_ident;
+	else if (token->flags & C23_DOT_EQUALS_LEFT)
+	  spelling = (const unsigned char *) "←";
+	else if (token->flags & C23_DOT_EQUALS_EQUAL)
+	  spelling = (const unsigned char *) "=";
+	else if (token->flags & C23_DOT_EQUALS_TRIPLE)
+	  spelling = (const unsigned char *) "===";
 	else
 	  spelling = TOKEN_NAME (token);
 

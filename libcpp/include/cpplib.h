@@ -114,6 +114,7 @@ class rich_location;
   OP(DEREF_STAR,	"->*")						\
   OP(DOT_STAR,		".*")						\
   OP(REFLECT_OP,	"^^")						\
+  OP(RIGHT_ASSIGN,	"→")	/* C23.= assignment */			\
   OP(ATSIGN,		"@")  /* used in Objective-C */			\
 									\
   TK(NAME,		IDENT)	 /* word */				\
@@ -217,6 +218,9 @@ struct GTY(()) cpp_string {
 #define NO_EXPAND	(1 << 10) /* Do not macro-expand this token.  */
 #define PRAGMA_OP	(1 << 11) /* _Pragma token.  */
 #define BOL		(1 << 12) /* Token at beginning of line.  */
+#define C23_DOT_EQUALS_LEFT (1u << 13) /* CPP_EQ was written as ←.  */
+#define C23_DOT_EQUALS_EQUAL (1u << 14) /* CPP_EQ_EQ was written as =.  */
+#define C23_DOT_EQUALS_TRIPLE (1u << 15) /* CPP_EQ_EQ was written as ===.  */
 
 /* Specify which field, if any, of the cpp_token union is used.  */
 
@@ -384,6 +388,10 @@ struct cpp_options
 
   /* Nonzero means process the ISO digraph sequences.  */
   unsigned char digraphs;
+
+  /* Nonzero means use the C23.= spellings: '=' compares, while the
+     Unicode arrows assign in the direction in which they point.  */
+  unsigned char c23_dot_equals;
 
   /* Nonzero means to allow hexadecimal floats and LL suffixes.  */
   unsigned char extended_numbers;

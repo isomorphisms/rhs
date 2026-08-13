@@ -2536,6 +2536,13 @@ applied with @option{-std=c11}) and a new value of
 ISO C23, the 2023 revision of the ISO C standard (published in 2024).  The
 name @samp{c2x} is deprecated.
 
+@item c23.=
+The C23.= experimental dialect.  It uses @samp{=} for equality and the
+Unicode arrows @samp{←} and @samp{→} for assignment.  A left-arrow chain
+associates from right to left, while a right-arrow chain assigns from left
+to right.  The legacy equality spellings @samp{==} and @samp{===} remain
+accepted to ease migration.
+
 @item c2y
 The next version of the ISO C standard, still under development.  The
 support for this version is experimental and incomplete.

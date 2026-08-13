@@ -10005,6 +10005,12 @@ c_parser_string_literal (c_parser *parser, bool translate, bool wide_ok)
    assignment-operator: one of
      = *= /= %= += -= <<= >>= &= ^= |=
 
+   With -std=c23.=, the plain assignment productions are instead written
+   with arrows.  A left arrow keeps C's right associativity; a right-arrow
+   chain is handled explicitly below so assignment follows the arrows from
+   left to right.  In that dialect '=' enters the binary-expression parser
+   as equality rather than entering this assignment parser.
+
    In GNU C we accept any conditional expression on the LHS and
    diagnose the invalid lvalue rather than producing a syntax
    error.  */
@@ -10024,8 +10030,81 @@ c_parser_expr_no_commas (c_parser *parser, struct c_expr *after,
   switch (c_parser_peek_token (parser)->type)
     {
     case CPP_EQ:
+      /* In this function NOP_EXPR does not mean that nothing happens.
+	 build_modify_expr interprets it as plain, uncombined assignment.  In
+	 C23.= CPP_EQ is produced by the left arrow rather than by '='.  */
       code = NOP_EXPR;
       break;
+    case CPP_RIGHT_ASSIGN:
+      {
+	/* A c_expr carries both a GCC syntax-tree value and the source range
+	   which produced it.  destination is therefore an entire expression,
+	   not merely a location.  location_t is GCC's compact source-position
+	   handle; it lets diagnostics underline the appropriate arrow.
+
+	   Left assignment below recurses, giving a ← (b ← c).  Right
+	   assignment instead loops, giving (c → b) → a.  The value yielded
+	   by each assignment is sent onward to the next destination.  */
+	struct c_expr flowing_value = lhs;
+	struct c_expr destination;
+
+	/* C23.= follow-up: design the proposed "always" loop spelling.  This
+	   compiler implementation is currently C++ and therefore still uses its
+	   host language's while (true) form.  */
+	while (true)
+	  {
+	    // Advance past → so the next expression names its destination.
+	    c_parser_consume_token (parser);
+	    destination
+	      = c_parser_conditional_expression (parser, NULL, NULL_TREE);
+
+	    /* Assignment reads the flowing value but writes the destination.
+	       convert_lvalue_to_rvalue is an ordinary helper function which
+	       performs that read when the value happens to be a variable.  */
+	    location_t value_location = flowing_value.get_start ();
+	    flowing_value = convert_lvalue_to_rvalue
+	      (value_location, flowing_value, true, true);
+
+	    /* build_modify_expr is another ordinary helper function.  MODIFY_EXPR
+	       is GCC's capitalized enum constant for assignment, not a function.
+	       The written operands are reversed here: in "value → destination",
+	       the destination is the object modified and value is what it receives.  */
+	    ret.value = build_modify_expr
+	      (op_location, destination.value, destination.original_type,
+	       NOP_EXPR, value_location, flowing_value.value,
+	       flowing_value.original_type);
+
+	    // The new expression was not itself a decimal integer literal.
+	    ret.m_decimal = 0;
+	    /* Record that the source contained assignment even if later compiler
+	       passes simplify its tree into some other form.  */
+	    ret.original_code = MODIFY_EXPR;
+	    // NULL_TREE is GCC's null pointer for a syntax-tree node.
+	    ret.original_type = NULL_TREE;
+	    /* get_start() and get_finish() are small c_expr member functions, not
+	       templates.  They retrieve the two ends of the saved source range.
+	       set_c_expr_source_range is a helper which stores the complete written
+	       span: from the first value through the current destination.  */
+	    set_c_expr_source_range (&ret, flowing_value.get_start (),
+				     destination.get_finish ());
+
+	    /* With no next arrow, break exits this while loop; it does not break
+	       some expression value or GCC syntax-tree object.  */
+	    if (c_parser_next_token_is_not (parser, CPP_RIGHT_ASSIGN))
+	      break;
+
+	    /* An assignment expression has the value that was assigned.  Make
+	       that result the value which flows through the next right arrow.  */
+	    flowing_value = ret;
+	    op_location = c_parser_peek_token (parser)->location;
+	  }
+
+	/* OMP abbreviates OpenMP.  The surrounding parser temporarily disables
+	   special OpenMP-for assignment handling and must restore its old state
+	   before returning.  */
+	c_in_omp_for = save_in_omp_for;
+	return ret;
+      }
     case CPP_MULT_EQ:
       code = MULT_EXPR;
       break;
@@ -10417,6 +10496,10 @@ c_parser_binary_expression (c_parser *parser, struct c_expr *after,
   sp = 0;
   while (true)
     {
+      /* oprec is this operator's precedence: how tightly it binds relative
+	 to neighboring operators.  PREC_EQ is the equality level.  ocode is
+	 the GCC syntax-tree operation to construct; EQ_EXPR means an equality
+	 test.  The names are capitalized because they are enum constants.  */
       enum c_parser_prec oprec;
       enum tree_code ocode;
       source_range src_range;
