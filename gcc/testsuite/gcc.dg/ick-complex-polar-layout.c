@@ -45,6 +45,36 @@ bounce (double _Complex value)
   return value;
 }
 
+__attribute__ ((noinline, noipa))
+static double _Complex
+return_constant (void)
+{
+  return 3.0 + 4.0i;
+}
+
+__attribute__ ((noinline, noipa))
+static void
+set_real_component (double _Complex *value, double real)
+{
+  __real__ *value = real;
+}
+
+__attribute__ ((noinline, noipa))
+static void
+set_imaginary_component (double _Complex *value, double imaginary)
+{
+  __imag__ *value = imaginary;
+}
+
+__attribute__ ((noinline, noipa))
+static void
+set_cartesian_components (double _Complex *value, double real,
+			  double imaginary)
+{
+  __real__ *value = real;
+  __imag__ *value = imaginary;
+}
+
 int
 main (void)
 {
@@ -73,7 +103,9 @@ main (void)
   if (zero_raw[0] != 0.0 || zero_raw[1] != 0.0)
     return 4;
 
-  /* Exercise runtime Cartesian-to-polar construction, not only constants.  */
+  /* Exercise runtime Cartesian-to-polar construction, not only constants.
+     At -O2 the addressable assignment is lowered to adjacent component
+     stores, which must be paired before either physical slot is written.  */
   volatile double runtime_real = 3.0;
   volatile double runtime_imag = 4.0;
   double _Complex automatic_z
@@ -135,6 +167,41 @@ main (void)
 			__builtin_atan2 (__builtin_sin (4.0),
 					 __builtin_cos (4.0))))
     return 10;
+
+  /* Adjacent component stores are also how optimization can lower a complete
+     Cartesian assignment to an addressable complex object.  */
+  set_cartesian_components (&automatic_z, 5.0, 12.0);
+  double paired_store_raw[2];
+  copy_bytes (paired_store_raw, &automatic_z, sizeof paired_store_raw);
+  if (!close_enough (paired_store_raw[0], 13.0)
+      || !close_enough (paired_store_raw[1],
+			__builtin_atan2 (12.0, 5.0)))
+    return 11;
+
+  /* A standalone component lvalue store is a Cartesian operation, not a raw
+     radius or angle write.  Keep these stores in separate functions so each
+     lowering must reconstruct the untouched Cartesian component.  */
+  set_real_component (&automatic_z, 6.0);
+  set_imaginary_component (&automatic_z, 8.0);
+  double component_store_raw[2];
+  copy_bytes (component_store_raw, &automatic_z,
+	      sizeof component_store_raw);
+  if (!close_enough (component_store_raw[0], 10.0)
+      || !close_enough (component_store_raw[1],
+			__builtin_atan2 (8.0, 6.0))
+      || !close_enough (__real__ automatic_z, 6.0)
+      || !close_enough (__imag__ automatic_z, 8.0))
+    return 12;
+
+  /* A literal can survive optimization directly on GIMPLE_RETURN, without a
+     complex assignment that would otherwise polarize it.  */
+  double _Complex direct_constant = return_constant ();
+  double direct_constant_raw[2];
+  copy_bytes (direct_constant_raw, &direct_constant,
+	      sizeof direct_constant_raw);
+  if (!close_enough (direct_constant_raw[0], 5.0)
+      || !close_enough (direct_constant_raw[1], raw[1]))
+    return 13;
 
   return 0;
 }
