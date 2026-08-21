@@ -5594,15 +5594,15 @@ output_constant (tree exp, unsigned HOST_WIDE_INT size, unsigned int align,
 
     case COMPLEX_TYPE:
       if (SCALAR_FLOAT_TYPE_P (TREE_TYPE (TREE_TYPE (exp))))
-        {
-          tree radius, angle;
-          ick_polar_complex_constant_parts (exp, &radius, &angle);
-          output_constant (radius, thissize / 2, align, reverse, false);
-          output_constant (angle, thissize / 2,
-                           min_align (align, BITS_PER_UNIT * (thissize / 2)),
-                           reverse, false);
-          break;
-        }
+	{
+	  tree radius, angle;
+	  ick_polar_complex_constant_parts (exp, &radius, &angle);
+	  output_constant (radius, thissize / 2, align, reverse, false);
+	  output_constant (angle, thissize / 2,
+			   min_align (align, BITS_PER_UNIT * (thissize / 2)),
+			   reverse, false);
+	  break;
+	}
       output_constant (TREE_REALPART (exp), thissize / 2, align,
 		       reverse, false);
       output_constant (TREE_IMAGPART (exp), thissize / 2,

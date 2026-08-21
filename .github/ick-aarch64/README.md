@@ -18,6 +18,15 @@ The boundary to NDK Clang/C++ must contain only ordinary scalar and pointer or
 array parameters; the ICK `_Complex` calling and object ABI is not compatible
 with Clang's Cartesian representation.
 
+This draft is qualified only for the exercised leaf-object pattern.  The
+focused suite covers direct returns of complex constants and lvalue stores
+through `__real__` or `__imag__` on nonvolatile objects.  Volatile complex
+objects, optimized bytewise copies or views of complex object storage, and
+calls to external functions that accept or return `_Complex` still have
+representation gaps.  The Wegert fixture uses none of those operations; they
+remain blockers to treating this as a general maintained `_Complex`
+implementation.
+
 This qualification covers finite Cartesian inputs only.  ICK's two-word
 polar representation does not preserve every ISO C `_Complex` distinction
 involving infinities, NaNs, or signed-zero quadrants; code needing those cases

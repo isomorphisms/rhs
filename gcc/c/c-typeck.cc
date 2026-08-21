@@ -4395,15 +4395,15 @@ build_function_call_vec (location_t loc, vec<location_t> arg_loc,
   if (fundecl && params && params->length () == 1)
     {
       enum built_in_function code
-        = ick_complex_rounding_builtin (fundecl, (*params)[0]);
+	= ick_complex_rounding_builtin (fundecl, (*params)[0]);
       if (code != END_BUILTINS)
-        {
-          fundecl = builtin_decl_explicit (code);
-          gcc_assert (fundecl);
-          function = fundecl;
-          name = DECL_NAME (fundecl);
-          orig_fundecl = fundecl;
-        }
+	{
+	  fundecl = builtin_decl_explicit (code);
+	  gcc_assert (fundecl);
+	  function = fundecl;
+	  name = DECL_NAME (fundecl);
+	  orig_fundecl = fundecl;
+	}
     }
 
   if (TREE_CODE (TREE_TYPE (function)) == FUNCTION_TYPE)
