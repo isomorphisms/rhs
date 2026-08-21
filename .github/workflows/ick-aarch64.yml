@@ -263,6 +263,7 @@ jobs:
             /tmp/ick-wegert-gate.exports
 
       - name: Upload compiler
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ick-aarch64-linux

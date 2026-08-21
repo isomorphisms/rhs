@@ -2242,10 +2242,12 @@ expand_complex_operations_1 (gimple_stmt_iterator *gsi)
 		 && TREE_CODE (lhs) == SSA_NAME)
 	  {
 	    rhs = gimple_assign_rhs1 (stmt);
+	    /* ICK Cartesian extraction emits scalar math statements for a
+	       nonconstant polar value, so request a GIMPLE operand here.  */
 	    rhs = extract_component (gsi, TREE_OPERAND (rhs, 0),
 		                     gimple_assign_rhs_code (stmt)
 				       == IMAGPART_EXPR,
-				     false);
+				     true);
 	    gimple_assign_set_rhs_from_tree (gsi, rhs);
 	    stmt = gsi_stmt (*gsi);
 	    update_stmt (stmt);
