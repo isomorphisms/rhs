@@ -53,6 +53,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "attribs.h"
 #include "asan.h"
 #include "realmpfr.h"
+#include "builtins.h"
 #include "tree-pretty-print-markup.h"
 #include "gcc-urlifier.h"
 
@@ -4328,6 +4329,38 @@ inform_declaration (tree decl, tree function_expr)
    or pointer-to-function.  This function changes the elements of
    PARAMS.  */
 
+/* ICK gives the ordinary floor/ceil spellings a floating-complex
+   overload.  Dispatch before convert_arguments applies the ordinary C
+   prototype and loses the imaginary component.  */
+static enum built_in_function
+ick_complex_rounding_builtin (tree fundecl, tree arg)
+{
+  if (!fundecl
+      || !fndecl_built_in_p (fundecl, BUILT_IN_NORMAL)
+      || !arg
+      || TREE_CODE (TREE_TYPE (arg)) != COMPLEX_TYPE
+      || !SCALAR_FLOAT_TYPE_P (TREE_TYPE (TREE_TYPE (arg))))
+    return END_BUILTINS;
+
+  switch ((enum built_in_function) DECL_FUNCTION_CODE (fundecl))
+    {
+    case BUILT_IN_FLOOR:
+      return BUILT_IN_CFLOOR;
+    case BUILT_IN_FLOORF:
+      return BUILT_IN_CFLOORF;
+    case BUILT_IN_FLOORL:
+      return BUILT_IN_CFLOORL;
+    case BUILT_IN_CEIL:
+      return BUILT_IN_CCEIL;
+    case BUILT_IN_CEILF:
+      return BUILT_IN_CCEILF;
+    case BUILT_IN_CEILL:
+      return BUILT_IN_CCEILL;
+    default:
+      return END_BUILTINS;
+    }
+}
+
 tree
 build_function_call_vec (location_t loc, vec<location_t> arg_loc,
 			 tree function, vec<tree, va_gc> *params,
@@ -4358,6 +4391,21 @@ build_function_call_vec (location_t loc, vec<location_t> arg_loc,
       if (name && startswith (IDENTIFIER_POINTER (name), "__atomic_"))
         origtypes = NULL;
     }
+
+  if (fundecl && params && params->length () == 1)
+    {
+      enum built_in_function code
+        = ick_complex_rounding_builtin (fundecl, (*params)[0]);
+      if (code != END_BUILTINS)
+        {
+          fundecl = builtin_decl_explicit (code);
+          gcc_assert (fundecl);
+          function = fundecl;
+          name = DECL_NAME (fundecl);
+          orig_fundecl = fundecl;
+        }
+    }
+
   if (TREE_CODE (TREE_TYPE (function)) == FUNCTION_TYPE)
     function = function_to_pointer_conversion (loc, function);
 
