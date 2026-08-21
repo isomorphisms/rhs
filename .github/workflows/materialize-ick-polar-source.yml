@@ -1,0 +1,55 @@
+name: Materialize ICK polar source
+
+on:
+  push:
+    branches:
+      - ick-aarch64
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ick-aarch64
+          fetch-depth: 1
+
+      - name: Stop once source is materialized
+        id: state
+        shell: bash
+        run: |
+          if grep -q 'floating_complex_type_p' gcc/tree-complex.cc; then
+            echo 'done=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'done=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Materialize physical polar representation into GCC source
+        if: steps.state.outputs.done != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/ick-polar
+          curl -fsSL \
+            https://raw.githubusercontent.com/isomorphisms/ick/aarch64-polar-bootstrap/compiler/apply_ick_polar_complex.py \
+            -o /tmp/ick-polar/apply_ick_polar_complex.py
+          curl -fsSL \
+            https://raw.githubusercontent.com/isomorphisms/ick/aarch64-polar-bootstrap/compiler/apply_ick_polar_complex_aarch64.py \
+            -o /tmp/ick-polar/apply_ick_polar_complex_aarch64.py
+          python3 /tmp/ick-polar/apply_ick_polar_complex_aarch64.py
+
+          git add -- \
+            gcc/tree-complex.cc \
+            gcc/c/c-typeck.cc \
+            gcc/varasm.cc \
+            gcc/builtins.def \
+            gcc/testsuite/gcc.dg/ick-complex-polar-layout.c \
+            gcc/testsuite/gcc.dg/ick-complex-round.c
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Store floating complex values in polar form'
+          git push origin HEAD:ick-aarch64
