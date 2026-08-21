@@ -4,12 +4,28 @@ on:
   push:
     branches:
       - ick-aarch64
+      - circles-are-balanced
+      - master
+  pull_request:
+    branches:
+      - circles-are-balanced
+      - master
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  ANDROID_NDK_VERSION: 29.0.14206865
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - name: Check out live ICK source
         uses: actions/checkout@v4
@@ -20,15 +36,32 @@ jobs:
           sudo apt-get install -y \
             build-essential flex bison texinfo \
             libgmp-dev libmpfr-dev libmpc-dev libisl-dev libzstd-dev zstd \
-            binutils-aarch64-linux-gnu
+            binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross qemu-user
+
+      - name: Install Android NDK r29
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+
+      - name: Install pinned Android NDK
+        run: sdkmanager "ndk;$ANDROID_NDK_VERSION"
 
       - name: Configure AArch64 compiler
+        shell: bash
         run: |
+          set -euxo pipefail
+          aarch64_as="$(command -v aarch64-linux-gnu-as)"
+          aarch64_ld="$(command -v aarch64-linux-gnu-ld)"
+          test -x "$aarch64_as"
+          test -x "$aarch64_ld"
           mkdir build stage
           cd build
           ../configure \
             --target=aarch64-linux-gnu \
             --prefix="$GITHUB_WORKSPACE/stage" \
+            --with-as="$aarch64_as" \
+            --with-ld="$aarch64_ld" \
             --enable-languages=c \
             --disable-bootstrap \
             --disable-multilib \
@@ -43,34 +76,191 @@ jobs:
             --disable-libvtv
 
       - name: Build ICK
+        shell: bash
         run: |
+          set -euxo pipefail
           make -C build -j2 all-gcc
           make -C build install-gcc
           cat > stage/bin/ick-aarch64 <<'EOF'
           #!/bin/sh
-          exec "$(dirname "$0")/aarch64-linux-gnu-gcc" "$@"
+          set -eu
+          script_path="$(readlink -f -- "$0")"
+          script_dir="$(CDPATH= cd -- "$(dirname -- "$script_path")" && pwd)"
+          exec "$script_dir/aarch64-linux-gnu-gcc" "$@"
           EOF
           chmod +x stage/bin/ick-aarch64
+          cp .github/ick-aarch64/README.md stage/README.md
 
-      - name: Verify AArch64 object generation
+      - name: Package and relocate compiler
         shell: bash
         run: |
           set -euxo pipefail
-          stage/bin/ick-aarch64 --version
-          cc1_path="$(stage/bin/ick-aarch64 -print-prog-name=cc1)"
+          tar --zstd -cf ick-aarch64-linux.tar.zst -C stage .
+          sha256sum ick-aarch64-linux.tar.zst > ick-aarch64-linux.tar.zst.sha256
+          sha256sum -c ick-aarch64-linux.tar.zst.sha256
+
+          mv stage "$RUNNER_TEMP/ick-aarch64-original"
+          mkdir "$RUNNER_TEMP/ick-aarch64-relocated"
+          tar --zstd -xf ick-aarch64-linux.tar.zst \
+            -C "$RUNNER_TEMP/ick-aarch64-relocated"
+
+      - name: Verify relocated AArch64 compiler
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ick="$RUNNER_TEMP/ick-aarch64-relocated/bin/ick-aarch64"
+          "$ick" --version
+
+          cc1_path="$("$ick" -print-prog-name=cc1)"
+          as_path="$("$ick" -print-prog-name=as)"
+          ld_path="$("$ick" -print-prog-name=ld)"
           test -x "$cc1_path"
+          case "$cc1_path" in
+            "$RUNNER_TEMP/ick-aarch64-relocated"/*) ;;
+            *) echo "cc1 did not relocate: $cc1_path" >&2; exit 1 ;;
+          esac
+          test "$(readlink -f "$as_path")" \
+            = "$(readlink -f "$(command -v aarch64-linux-gnu-as)")"
+          test "$(readlink -f "$ld_path")" \
+            = "$(readlink -f "$(command -v aarch64-linux-gnu-ld)")"
 
           cat > /tmp/plain.c <<'EOF'
           int add(int a, int b) { return a + b; }
           EOF
-          stage/bin/ick-aarch64 -O2 -c /tmp/plain.c -o /tmp/plain.o
+          "$ick" -O2 -fPIC -c /tmp/plain.c -o /tmp/plain.o
           aarch64-linux-gnu-readelf -h /tmp/plain.o | tee /tmp/plain.elf
           grep -q 'Machine:.*AArch64' /tmp/plain.elf
 
-      - name: Package compiler
+          "$ick" -nostdlib -static -Wl,-e,add \
+            /tmp/plain.o -o /tmp/plain
+          aarch64-linux-gnu-readelf -h /tmp/plain | tee /tmp/plain-linked.elf
+          grep -q 'Machine:.*AArch64' /tmp/plain-linked.elf
+
+      - name: Verify static polar storage
+        shell: bash
         run: |
-          tar --zstd -cf ick-aarch64-linux.tar.zst -C stage .
-          sha256sum ick-aarch64-linux.tar.zst > ick-aarch64-linux.tar.zst.sha256
+          set -euxo pipefail
+          ick="$RUNNER_TEMP/ick-aarch64-relocated/bin/ick-aarch64"
+          cat > /tmp/polar-static.c <<'EOF'
+          double _Complex stored = 3.0 + 4.0i;
+          EOF
+          "$ick" -O2 -fPIC -c /tmp/polar-static.c -o /tmp/polar-static.o
+          aarch64-linux-gnu-objcopy \
+            --dump-section .data=/tmp/polar-static.data /tmp/polar-static.o
+          python3 - <<'PY'
+          import math
+          import pathlib
+          import struct
+
+          data = pathlib.Path('/tmp/polar-static.data').read_bytes()
+          assert len(data) == 16, len(data)
+          radius, angle = struct.unpack_from('<dd', data)
+          assert math.isclose(radius, 5.0, rel_tol=0.0, abs_tol=1e-12), radius
+          expected = math.atan2(4.0, 3.0)
+          assert math.isclose(angle, expected, rel_tol=0.0, abs_tol=1e-12), angle
+          PY
+
+      - name: Verify native polar multiplication
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ick="$RUNNER_TEMP/ick-aarch64-relocated/bin/ick-aarch64"
+          cat > /tmp/polar-multiply.c <<'EOF'
+          double _Complex multiply(double _Complex left,
+                                   double _Complex right)
+          {
+            return left * right;
+          }
+          EOF
+          "$ick" -O2 -fPIC -S \
+            /tmp/polar-multiply.c -o /tmp/polar-multiply.s
+          grep -Eq '^[[:space:]]*fmul[[:space:]]' /tmp/polar-multiply.s
+          grep -Eq '^[[:space:]]*fadd[[:space:]]' /tmp/polar-multiply.s
+          ! grep -Eiq 'hypot|atan2|cos|sin|__mul[sdx]c3' \
+            /tmp/polar-multiply.s
+
+      - name: Run focused polar and radial tests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ick="$RUNNER_TEMP/ick-aarch64-relocated/bin/ick-aarch64"
+          for optimization in O0 O2; do
+            for test_name in ick-complex-polar-layout ick-complex-round; do
+              output="/tmp/$test_name-$optimization"
+              "$ick" "-$optimization" -fPIE \
+                -c "gcc/testsuite/gcc.dg/$test_name.c" \
+                -o "$output.o"
+              aarch64-linux-gnu-gcc -pie "$output.o" \
+                -lm -o "$output"
+              qemu-aarch64 -L /usr/aarch64-linux-gnu "$output"
+            done
+          done
+
+      - name: Run the scalar AArch64 cross-compiler boundary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ick="$RUNNER_TEMP/ick-aarch64-relocated/bin/ick-aarch64"
+          for optimization in O0 O2; do
+            "$ick" "-$optimization" -std=gnu11 -fPIC -fvisibility=hidden \
+              -c .github/ick-aarch64/ick-android-math.c \
+              -o "/tmp/ick-boundary-$optimization.o"
+            aarch64-linux-gnu-gcc "-$optimization" -std=c11 -fPIE \
+              -c .github/ick-aarch64/ndk-bridge.c \
+              -o "/tmp/boundary-bridge-$optimization.o"
+            aarch64-linux-gnu-gcc "-$optimization" -std=c11 -fPIE \
+              -c .github/ick-aarch64/linux-boundary-main.c \
+              -o "/tmp/boundary-main-$optimization.o"
+            aarch64-linux-gnu-gcc -pie \
+              "/tmp/ick-boundary-$optimization.o" \
+              "/tmp/boundary-bridge-$optimization.o" \
+              "/tmp/boundary-main-$optimization.o" \
+              -lm -o "/tmp/ick-boundary-$optimization"
+            qemu-aarch64 -L /usr/aarch64-linux-gnu \
+              "/tmp/ick-boundary-$optimization"
+          done
+
+      - name: Qualify the Wegert Android object boundary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ick="$RUNNER_TEMP/ick-aarch64-relocated/bin/ick-aarch64"
+          sdk_root="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          llvm_bin="$sdk_root/ndk/$ANDROID_NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          ndk_cc="$llvm_bin/aarch64-linux-android26-clang"
+          test -x "$ndk_cc"
+
+          "$ick" -std=gnu11 -O2 -fPIC -fvisibility=hidden \
+            -c .github/ick-aarch64/ick-android-math.c \
+            -o /tmp/ick-android-math.o
+          "$ndk_cc" -std=c11 -O2 -fPIC -fvisibility=hidden \
+            -c .github/ick-aarch64/ndk-bridge.c \
+            -o /tmp/ndk-bridge.o
+          "$ndk_cc" -shared \
+            -Wl,-z,defs \
+            -Wl,-z,text \
+            -Wl,--fatal-warnings \
+            -Wl,-soname,libick-wegert-gate.so \
+            /tmp/ick-android-math.o /tmp/ndk-bridge.o \
+            -lm -o /tmp/libick-wegert-gate.so
+
+          "$llvm_bin/llvm-readelf" -h /tmp/ick-android-math.o \
+            | tee /tmp/ick-android-math.elf
+          "$llvm_bin/llvm-readelf" -h /tmp/libick-wegert-gate.so \
+            | tee /tmp/ick-wegert-gate.elf
+          grep -q 'Machine:.*AArch64' /tmp/ick-android-math.elf
+          grep -q 'Machine:.*AArch64' /tmp/ick-wegert-gate.elf
+
+          "$llvm_bin/llvm-nm" -u /tmp/ick-android-math.o \
+            | tee /tmp/ick-android-math.undefined
+          ! grep -Eq '__mul(sc|dc|xc)3|__div(sc|dc|xc)3' \
+            /tmp/ick-android-math.undefined
+          "$llvm_bin/llvm-nm" -D --defined-only /tmp/libick-wegert-gate.so \
+            | tee /tmp/ick-wegert-gate.exports
+          grep -Eq '[[:space:]]ick_complex_cartesian$' \
+            /tmp/ick-wegert-gate.exports
+          grep -Eq '[[:space:]]wegert_ick_runtime_probe$' \
+            /tmp/ick-wegert-gate.exports
 
       - name: Upload compiler
         uses: actions/upload-artifact@v4

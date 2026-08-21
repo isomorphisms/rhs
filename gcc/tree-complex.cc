@@ -2044,10 +2044,10 @@ gimple_expand_builtin_cabs (gimple_stmt_iterator *gsi, gimple *old_stmt)
   gsi_replace (gsi, new_stmt, true);
 }
 
-/* carg remains a semantic operation: return the principal phase even if the
-   stored polar argument has wandered outside [-pi,pi] after multiplication or
-   division.  Reconstructing the Cartesian pair also preserves the usual NaN
-   and signed-zero behavior better than returning the raw angle slot.  */
+/* Return the stored phase directly when it is already principal.  In
+   particular, reconstructing +pi through sin/cos can turn it into -pi after
+   rounding (notably for float).  Multiplication and division can move the
+   stored phase outside [-pi,pi], so normalize only that case.  */
 static void
 gimple_expand_builtin_carg (gimple_stmt_iterator *gsi, gimple *old_stmt)
 {
@@ -2056,16 +2056,32 @@ gimple_expand_builtin_carg (gimple_stmt_iterator *gsi, gimple *old_stmt)
     return;
   tree arg = gimple_call_arg (old_stmt, 0);
   tree inner_type = TREE_TYPE (TREE_TYPE (arg));
-  tree real = extract_component (gsi, arg, false, true);
-  tree imag = extract_component (gsi, arg, true, true);
+  tree angle = extract_storage_component (gsi, arg, true, true);
+  location_t loc = gimple_location (old_stmt);
   gimple_seq stmts = NULL;
-  tree principal = build_polar_binary_call (&stmts,
-                                             gimple_location (old_stmt),
-                                             inner_type, BUILT_IN_ATAN2,
-                                             imag, real);
+  tree direction_real = build_polar_unary_call (&stmts, loc, inner_type,
+						 BUILT_IN_COS, angle);
+  tree direction_imag = build_polar_unary_call (&stmts, loc, inner_type,
+						 BUILT_IN_SIN, angle);
+  tree principal = build_polar_binary_call (&stmts, loc, inner_type,
+					    BUILT_IN_ATAN2,
+					    direction_imag, direction_real);
+
+  tree pi = build_real_truncate (inner_type, dconst_pi ());
+  tree negative_pi = fold_build1 (NEGATE_EXPR, inner_type, pi);
+  tree above_lower_bound = gimple_build (&stmts, loc, GE_EXPR,
+					 boolean_type_node, angle, negative_pi);
+  tree below_upper_bound = gimple_build (&stmts, loc, LE_EXPR,
+					 boolean_type_node, angle, pi);
+  tree in_principal_range = gimple_build (&stmts, loc, BIT_AND_EXPR,
+					  boolean_type_node,
+					  above_lower_bound,
+					  below_upper_bound);
+  tree result = gimple_build (&stmts, loc, COND_EXPR, inner_type,
+			      in_principal_range, angle, principal);
   gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
-  gimple *new_stmt = gimple_build_assign (lhs, principal);
-  gimple_set_location (new_stmt, gimple_location (old_stmt));
+  gimple *new_stmt = gimple_build_assign (lhs, result);
+  gimple_set_location (new_stmt, loc);
   gsi_replace (gsi, new_stmt, true);
 }
 
