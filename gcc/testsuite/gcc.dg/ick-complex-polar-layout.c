@@ -1,8 +1,6 @@
 /* { dg-do run } */
 /* { dg-options "-O2" } */
 
-extern void abort (void);
-
 _Static_assert (sizeof (float _Complex) == 2 * sizeof (float),
 		"float complex must occupy two scalar slots");
 _Static_assert (sizeof (double _Complex) == 2 * sizeof (double),
@@ -54,12 +52,12 @@ main (void)
   copy_bytes (raw, &static_z, sizeof raw);
   if (!close_enough (raw[0], 5.0)
       || !close_enough (raw[1], __builtin_atan2 (4.0, 3.0)))
-    abort ();
+    return 1;
 
   /* Language-level Cartesian access is reconstructed from polar storage.  */
   if (!close_enough (__real__ static_z, 3.0)
       || !close_enough (__imag__ static_z, 4.0))
-    abort ();
+    return 2;
 
   double negative_raw[2];
   copy_bytes (negative_raw, &static_negative_axis, sizeof negative_raw);
@@ -68,12 +66,12 @@ main (void)
 			__builtin_atan2 (0.0, -2.0))
       || !close_enough (__real__ static_negative_axis, -2.0)
       || !close_enough (__imag__ static_negative_axis, 0.0))
-    abort ();
+    return 3;
 
   double zero_raw[2];
   copy_bytes (zero_raw, &static_zero, sizeof zero_raw);
   if (zero_raw[0] != 0.0 || zero_raw[1] != 0.0)
-    abort ();
+    return 4;
 
   /* Exercise runtime Cartesian-to-polar construction, not only constants.  */
   volatile double runtime_real = 3.0;
@@ -84,7 +82,7 @@ main (void)
   copy_bytes (automatic_raw, &automatic_z, sizeof automatic_raw);
   if (!close_enough (automatic_raw[0], 5.0)
       || !close_enough (automatic_raw[1], raw[1]))
-    abort ();
+    return 5;
 
   /* ICK-to-ICK function arguments and returns carry the same polar pair.  */
   double _Complex returned_z = bounce (automatic_z);
@@ -92,7 +90,7 @@ main (void)
   copy_bytes (returned_raw, &returned_z, sizeof returned_raw);
   if (returned_raw[0] != automatic_raw[0]
       || returned_raw[1] != automatic_raw[1])
-    abort ();
+    return 6;
 
   double _Complex constant_returned = bounce (3.0 + 4.0i);
   double constant_returned_raw[2];
@@ -100,7 +98,7 @@ main (void)
 	      sizeof constant_returned_raw);
   if (!close_enough (constant_returned_raw[0], 5.0)
       || !close_enough (constant_returned_raw[1], raw[1]))
-    abort ();
+    return 7;
 
   /* Multiplication operates natively on the polar pair.  */
   double _Complex unit_diagonal = bounce (1.0 + 1.0i);
@@ -113,7 +111,7 @@ main (void)
       || !close_enough (__builtin_cabs (product), 2.0)
       || !close_enough (__builtin_carg (product),
 			__builtin_atan2 (2.0, 0.0)))
-    abort ();
+    return 8;
 
   /* A principal +pi phase must not flip to -pi through sinf(pi).  */
   float float_negative_raw[2];
@@ -122,7 +120,7 @@ main (void)
   if (!close_enough_float (float_negative_raw[0], 2.0f)
       || __builtin_cargf (static_float_negative_axis)
 	 != float_negative_raw[1])
-    abort ();
+    return 9;
 
   /* Multiplication may move the stored phase outside the principal range;
      carg must normalize that result rather than returning the raw slot.  */
@@ -136,7 +134,7 @@ main (void)
       || !close_enough (__builtin_carg (phase_four),
 			__builtin_atan2 (__builtin_sin (4.0),
 					 __builtin_cos (4.0))))
-    abort ();
+    return 10;
 
   return 0;
 }

@@ -1272,11 +1272,10 @@ expand_complex_libcall (gimple_stmt_iterator *gsi, tree type, tree ar, tree ai,
   return lhs;
 }
 
-/* This experimental fork uses a polar working representation for floating
-   complex multiplication and division.  The public C object representation
-   remains a pair of real and imaginary components at this pass boundary; a
-   physical ABI change requires all component extraction, construction, call,
-   constant-folding, and library boundaries to change together.  */
+/* ICK uses a polar working and physical representation for floating complex
+   values.  Calls between ICK-compiled units therefore carry (radius, angle),
+   not the Cartesian complex ABI used by ordinary GCC and Clang.  External
+   boundaries must expose scalar or array components instead.  */
 
 static bool
 polar_math_builtins_available (tree type)

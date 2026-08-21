@@ -1,7 +1,6 @@
 /* { dg-do run } */
 /* { dg-options "-O2" } */
 
-extern void abort (void);
 extern double floor (double);
 extern double ceil (double);
 extern float floorf (float);
@@ -23,7 +22,7 @@ copy_bytes (void *destination, const void *source, unsigned long size)
     to[index] = from[index];
 }
 
-static void
+static int
 check_double (double radius, double angle,
 	      double expected_floor, double expected_ceil)
 {
@@ -39,12 +38,13 @@ check_double (double radius, double angle,
   copy_bytes (up_raw, &up, sizeof up_raw);
 
   if (down_raw[0] != expected_floor || up_raw[0] != expected_ceil)
-    abort ();
+    return 1;
   if (down_raw[1] != source_raw[1] || up_raw[1] != source_raw[1])
-    abort ();
+    return 2;
+  return 0;
 }
 
-static void
+static int
 check_float (float radius, float angle,
 	     float expected_floor, float expected_ceil)
 {
@@ -60,30 +60,47 @@ check_float (float radius, float angle,
   copy_bytes (up_raw, &up, sizeof up_raw);
 
   if (down_raw[0] != expected_floor || up_raw[0] != expected_ceil)
-    abort ();
+    return 1;
   if (down_raw[1] != source_raw[1] || up_raw[1] != source_raw[1])
-    abort ();
+    return 2;
+  return 0;
 }
 
 int
 main (void)
 {
+  int result;
+
   /* Zero radius may carry a latent phase, which both operations preserve.  */
-  check_double (0.0, -0.75, 0.0, 0.0);
-  check_float (0.0f, -0.75f, 0.0f, 0.0f);
+  if ((result = check_double (0.0, -0.75, 0.0, 0.0)))
+    return 10 + result;
+  if ((result = check_float (0.0f, -0.75f, 0.0f, 0.0f)))
+    return 20 + result;
 
   /* Floor may collapse the radius to zero without discarding its phase.  */
-  check_double (0.5, 0.25, 0.0, 1.0);
-  check_float (0.5f, 0.25f, 0.0f, 1.0f);
+  if ((result = check_double (0.5, 0.25, 0.0, 1.0)))
+    return 30 + result;
+  if ((result = check_float (0.5f, 0.25f, 0.0f, 1.0f)))
+    return 40 + result;
 
-  check_double (1.25, -1.0, 1.0, 2.0);
-  check_float (1.25f, -1.0f, 1.0f, 2.0f);
+  if ((result = check_double (1.25, -1.0, 1.0, 2.0)))
+    return 50 + result;
+  if ((result = check_float (1.25f, -1.0f, 1.0f, 2.0f)))
+    return 60 + result;
 
   /* Exact integer radii and axis phases remain bit-identical.  */
-  check_double (2.0, 0x1.921fb54442d18p+1, 2.0, 2.0);
-  check_float (2.0f, 0x1.921fb6p+1f, 2.0f, 2.0f);
-  check_double (5.0, __builtin_atan2 (4.0, 3.0), 5.0, 5.0);
-  check_float (5.0f, __builtin_atan2f (4.0f, 3.0f), 5.0f, 5.0f);
+  if ((result = check_double (2.0, 0x1.921fb54442d18p+1,
+			      2.0, 2.0)))
+    return 70 + result;
+  if ((result = check_float (2.0f, 0x1.921fb6p+1f, 2.0f, 2.0f)))
+    return 80 + result;
+  if ((result = check_double (5.0, __builtin_atan2 (4.0, 3.0),
+			      5.0, 5.0)))
+    return 90 + result;
+  if ((result = check_float (5.0f,
+			     __builtin_atan2f (4.0f, 3.0f),
+			     5.0f, 5.0f)))
+    return 100 + result;
 
   return 0;
 }
