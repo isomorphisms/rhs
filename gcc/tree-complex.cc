@@ -194,6 +194,55 @@ is_complex_reg (tree lhs)
   return TREE_CODE (TREE_TYPE (lhs)) == COMPLEX_TYPE && is_gimple_reg (lhs);
 }
 
+/* ICK floating complex values are physically a pair (modulus, argument).
+   GCC's COMPLEX_CST remains a semantic Cartesian tree constant until it is
+   lowered or emitted.  */
+static bool
+floating_complex_type_p (tree type)
+{
+  return (TREE_CODE (type) == COMPLEX_TYPE
+	  && SCALAR_FLOAT_TYPE_P (TREE_TYPE (type)));
+}
+
+/* Return true for a store through a language-level real or imaginary
+   component of an ICK floating complex object.  Such a store cannot write
+   the corresponding physical slot directly.  */
+static bool
+floating_complex_component_store_p (gimple *stmt)
+{
+  if (!is_gimple_assign (stmt) || !gimple_assign_single_p (stmt))
+    return false;
+
+  tree lhs = gimple_assign_lhs (stmt);
+  if (TREE_CODE (lhs) != REALPART_EXPR
+      && TREE_CODE (lhs) != IMAGPART_EXPR)
+    return false;
+
+  return floating_complex_type_p (TREE_TYPE (TREE_OPERAND (lhs, 0)));
+}
+
+/* Optimizers may leave a literal complex value directly on a return rather
+   than materializing a complex assignment for the lowering pass.  */
+static bool
+floating_complex_constant_return_p (gimple *stmt)
+{
+  if (gimple_code (stmt) != GIMPLE_RETURN)
+    return false;
+  tree value = gimple_return_retval (as_a <greturn *> (stmt));
+  return (value
+	  && TREE_CODE (value) == COMPLEX_CST
+	  && floating_complex_type_p (TREE_TYPE (value)));
+}
+
+static enum built_in_function
+normal_builtin_code (gimple *stmt)
+{
+  tree decl = is_gimple_call (stmt) ? gimple_call_fndecl (stmt) : NULL_TREE;
+  if (!decl || !fndecl_built_in_p (decl, BUILT_IN_NORMAL))
+    return END_BUILTINS;
+  return (enum built_in_function) DECL_FUNCTION_CODE (decl);
+}
+
 /* Mark the incoming parameters to the function as VARYING.  */
 
 static void
@@ -247,20 +296,41 @@ init_dont_simulate_again (void)
 	      if (gimple_call_lhs (stmt))
 		{
 		  sim_again_p = is_complex_reg (gimple_call_lhs (stmt));
-		  switch (gimple_call_combined_fn (stmt))
+		  switch (normal_builtin_code (stmt))
 		    {
-		    CASE_CFN_CABS:
-		      /* Expand cabs only if unsafe math and optimizing. */
-		      if (optimize && flag_unsafe_math_optimizations)
-			saw_a_complex_op = true;
+		    case BUILT_IN_CABS:
+		    case BUILT_IN_CABSF:
+		    case BUILT_IN_CABSL:
+		    case BUILT_IN_CARG:
+		    case BUILT_IN_CARGF:
+		    case BUILT_IN_CARGL:
+		    case BUILT_IN_CFLOOR:
+		    case BUILT_IN_CFLOORF:
+		    case BUILT_IN_CFLOORL:
+		    case BUILT_IN_CCEIL:
+		    case BUILT_IN_CCEILF:
+		    case BUILT_IN_CCEILL:
+		      saw_a_complex_op = true;
 		      break;
 		    default:;
 		    }
 		}
+	      if (gimple_call_lhs (stmt)
+		  && is_complex_reg (gimple_call_lhs (stmt)))
+		 saw_a_complex_op = true;
+	      for (unsigned int i = 0; i < gimple_call_num_args (stmt); ++i)
+		if (TREE_CODE (TREE_TYPE (gimple_call_arg (stmt, i)))
+		    == COMPLEX_TYPE)
+		  {
+		    saw_a_complex_op = true;
+		    break;
+		  }
 	      break;
 
 	    case GIMPLE_ASSIGN:
 	      sim_again_p = is_complex_reg (gimple_assign_lhs (stmt));
+	      if (floating_complex_component_store_p (stmt))
+		saw_a_complex_op = true;
 	      if (gimple_assign_rhs_code (stmt) == REALPART_EXPR
 		  || gimple_assign_rhs_code (stmt) == IMAGPART_EXPR)
 		op0 = TREE_OPERAND (gimple_assign_rhs1 (stmt), 0);
@@ -273,6 +343,11 @@ init_dont_simulate_again (void)
 	    case GIMPLE_COND:
 	      op0 = gimple_cond_lhs (stmt);
 	      op1 = gimple_cond_rhs (stmt);
+	      break;
+
+	    case GIMPLE_RETURN:
+	      if (floating_complex_constant_return_p (stmt))
+		saw_a_complex_op = true;
 	      break;
 
 	    default:
@@ -522,7 +597,8 @@ get_component_ssa_name (tree ssa_name, bool imag_p)
   size_t ssa_name_index;
   tree ret;
 
-  if (lattice == (imag_p ? ONLY_REAL : ONLY_IMAG))
+  if (!floating_complex_type_p (TREE_TYPE (ssa_name))
+      && lattice == (imag_p ? ONLY_REAL : ONLY_IMAG))
     {
       tree inner_type = TREE_TYPE (TREE_TYPE (ssa_name));
       if (SCALAR_FLOAT_TYPE_P (inner_type))
@@ -573,7 +649,8 @@ set_component_ssa_name (tree ssa_name, bool imag_p, tree value)
   /* We know the value must be zero, else there's a bug in our lattice
      analysis.  But the value may well be a variable known to contain
      zero.  We should be safe ignoring it.  */
-  if (lattice == (imag_p ? ONLY_REAL : ONLY_IMAG))
+  if (!floating_complex_type_p (TREE_TYPE (ssa_name))
+      && lattice == (imag_p ? ONLY_REAL : ONLY_IMAG))
     return NULL;
 
   /* If we've already assigned an SSA_NAME to this component, then this
@@ -627,18 +704,40 @@ set_component_ssa_name (tree ssa_name, bool imag_p, tree value)
   return list;
 }
 
-/* Extract the real or imaginary part of a complex variable or constant.
-   Make sure that it's a proper gimple_val and gimplify it if not.
-   Emit any new code before gsi.  */
+static bool polar_math_builtins_available (tree);
+static tree build_polar_unary_call (gimple_seq *, location_t, tree,
+				    enum built_in_function, tree);
+static tree build_polar_binary_call (gimple_seq *, location_t, tree,
+				     enum built_in_function, tree, tree);
 
+/* Build a value whose components already are ICK's physical pair.  Constants
+   retain that provenance so later folding and constant-pool output do not
+   mistake (modulus, argument) for semantic Cartesian components.  */
 static tree
-extract_component (gimple_stmt_iterator *gsi, tree t, bool imagpart_p,
-		   bool gimple_p, bool phiarg_p = false)
+build_ick_physical_complex_value (tree type, tree radius, tree angle)
+{
+  if (TREE_CODE (radius) == REAL_CST && TREE_CODE (angle) == REAL_CST)
+    return build_ick_physical_complex_cst (type, radius, angle);
+  return build2 (COMPLEX_EXPR, type, radius, angle);
+}
+
+/* Extract a raw physical slot.  For floating complex this is modulus for
+   slot zero and argument for slot one.  */
+static tree
+extract_storage_component (gimple_stmt_iterator *gsi, tree t,
+			   bool second_slot_p, bool gimple_p,
+			   bool phiarg_p = false)
 {
   switch (TREE_CODE (t))
     {
     case COMPLEX_CST:
-      return imagpart_p ? TREE_IMAGPART (t) : TREE_REALPART (t);
+      if (floating_complex_type_p (TREE_TYPE (t)))
+	{
+	  tree radius, angle;
+	  ick_complex_cst_storage_parts (t, &radius, &angle);
+	  return second_slot_p ? angle : radius;
+	}
+      return second_slot_p ? TREE_IMAGPART (t) : TREE_REALPART (t);
 
     case COMPLEX_EXPR:
       gcc_unreachable ();
@@ -649,7 +748,7 @@ extract_component (gimple_stmt_iterator *gsi, tree t, bool imagpart_p,
 	t = unshare_expr (t);
 	TREE_TYPE (t) = inner_type;
 	TREE_OPERAND (t, 1) = TYPE_SIZE (inner_type);
-	if (imagpart_p)
+	if (second_slot_p)
 	  TREE_OPERAND (t, 2) = size_binop (PLUS_EXPR, TREE_OPERAND (t, 2),
 					    TYPE_SIZE (inner_type));
 
@@ -683,7 +782,7 @@ extract_component (gimple_stmt_iterator *gsi, tree t, bool imagpart_p,
 	  gsi_insert_before (gsi, vce, GSI_SAME_STMT);
 
 	  tree new_lhs = make_ssa_name (TREE_TYPE (TREE_TYPE (t)));
-	  t = build1 ((imagpart_p ? IMAGPART_EXPR : REALPART_EXPR),
+	  t = build1 ((second_slot_p ? IMAGPART_EXPR : REALPART_EXPR),
 		      TREE_TYPE (TREE_TYPE (t)), new_cplx);
 	  gimple *new_ri = gimple_build_assign (new_lhs, t);
 	  gsi_insert_before (gsi, new_ri, GSI_SAME_STMT);
@@ -700,7 +799,7 @@ extract_component (gimple_stmt_iterator *gsi, tree t, bool imagpart_p,
       {
 	tree inner_type = TREE_TYPE (TREE_TYPE (t));
 
-	t = fold_build1 ((imagpart_p ? IMAGPART_EXPR : REALPART_EXPR),
+	t = fold_build1 ((second_slot_p ? IMAGPART_EXPR : REALPART_EXPR),
 			 inner_type, unshare_expr (t));
 
 	if (gimple_p)
@@ -715,7 +814,7 @@ extract_component (gimple_stmt_iterator *gsi, tree t, bool imagpart_p,
       }
 
     case SSA_NAME:
-      t = get_component_ssa_name (t, imagpart_p);
+      t = get_component_ssa_name (t, second_slot_p);
       if (TREE_CODE (t) == SSA_NAME && SSA_NAME_DEF_STMT (t) == NULL)
 	gcc_assert (phiarg_p);
       return t;
@@ -723,6 +822,37 @@ extract_component (gimple_stmt_iterator *gsi, tree t, bool imagpart_p,
     default:
       gcc_unreachable ();
     }
+}
+
+/* Extract a mathematical Cartesian component.  Existing GCC middle-end code
+   is allowed to keep asking for real/imaginary values; ICK reconstructs them
+   from its physical (rho,theta) pair.  */
+static tree
+extract_component (gimple_stmt_iterator *gsi, tree t, bool imagpart_p,
+		   bool gimple_p, bool phiarg_p = false)
+{
+  if (!floating_complex_type_p (TREE_TYPE (t)))
+    return extract_storage_component (gsi, t, imagpart_p, gimple_p, phiarg_p);
+
+  if (TREE_CODE (t) == COMPLEX_CST)
+    {
+      tree real, imag;
+      ick_complex_cst_semantic_parts (t, &real, &imag);
+      return imagpart_p ? imag : real;
+    }
+
+  gcc_assert (gsi && gimple_p);
+  tree inner_type = TREE_TYPE (TREE_TYPE (t));
+  tree radius = extract_storage_component (gsi, t, false, true, phiarg_p);
+  tree angle = extract_storage_component (gsi, t, true, true, phiarg_p);
+  gimple_seq stmts = NULL;
+  location_t loc = gimple_location (gsi_stmt (*gsi));
+  enum built_in_function trig = imagpart_p ? BUILT_IN_SIN : BUILT_IN_COS;
+  tree direction = build_polar_unary_call (&stmts, loc, inner_type, trig, angle);
+  tree result = gimple_build (&stmts, loc, MULT_EXPR, inner_type,
+			      radius, direction);
+  gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+  return result;
 }
 
 /* Update the complex components of the ssa name on the lhs of STMT.  */
@@ -760,13 +890,15 @@ update_complex_components_on_edge (edge e, tree lhs, tree r, tree i)
 }
 
 
-/* Update an assignment to a complex variable in place.  */
-
+/* Update an assignment whose two values already are the physical pair.
+   For floating ICK complex values this pair is (modulus, argument).  */
 static void
-update_complex_assignment (gimple_stmt_iterator *gsi, tree r, tree i)
+update_polar_assignment (gimple_stmt_iterator *gsi, tree radius, tree angle)
 {
   gimple *old_stmt = gsi_stmt (*gsi);
-  gimple_assign_set_rhs_with_ops (gsi, COMPLEX_EXPR, r, i);
+  tree type = TREE_TYPE (gimple_assign_lhs (old_stmt));
+  tree value = build_ick_physical_complex_value (type, radius, angle);
+  gimple_assign_set_rhs_from_tree (gsi, value);
   gimple *stmt = gsi_stmt (*gsi);
   update_stmt (stmt);
   if (maybe_clean_or_replace_eh_stmt (old_stmt, stmt))
@@ -774,9 +906,132 @@ update_complex_assignment (gimple_stmt_iterator *gsi, tree r, tree i)
   if (optimize)
     bitmap_set_bit (dce_worklist, SSA_NAME_VERSION (gimple_assign_lhs (stmt)));
 
-  update_complex_components (gsi, gsi_stmt (*gsi), r, i);
+  update_complex_components (gsi, gsi_stmt (*gsi), radius, angle);
 }
 
+/* Convert a semantic Cartesian assignment to the ICK physical pair.  */
+static void
+update_complex_assignment (gimple_stmt_iterator *gsi, tree real, tree imag)
+{
+  tree lhs = gimple_get_lhs (gsi_stmt (*gsi));
+  tree complex_type = TREE_TYPE (lhs);
+  if (!floating_complex_type_p (complex_type))
+    {
+      update_polar_assignment (gsi, real, imag);
+      return;
+    }
+
+  tree inner_type = TREE_TYPE (complex_type);
+  gcc_assert (polar_math_builtins_available (inner_type));
+  gimple_seq stmts = NULL;
+  location_t loc = gimple_location (gsi_stmt (*gsi));
+  tree radius = build_polar_binary_call (&stmts, loc, inner_type,
+					 BUILT_IN_HYPOT, real, imag);
+  tree angle = build_polar_binary_call (&stmts, loc, inner_type,
+					BUILT_IN_ATAN2, imag, real);
+  gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+  update_polar_assignment (gsi, radius, angle);
+}
+
+/* Rewrite one already-lowered physical slot store in place.  The caller is
+   responsible for ensuring this statement is not visited again as a semantic
+   component store.  */
+static void
+rewrite_storage_component_store (gimple_stmt_iterator *gsi, tree object,
+				 bool second_slot_p, tree value)
+{
+  tree inner_type = TREE_TYPE (TREE_TYPE (object));
+  tree lhs = build1 (second_slot_p ? IMAGPART_EXPR : REALPART_EXPR,
+		     inner_type, unshare_expr (object));
+  gimple_assign_set_lhs (gsi_stmt (*gsi), lhs);
+  gimple_assign_set_rhs_with_ops (gsi, TREE_CODE (value), value);
+  update_stmt (gsi_stmt (*gsi));
+}
+
+/* Lower a language-level component store to ICK's physical pair.  Adjacent
+   real/imaginary stores to the same nonvolatile object are the total-store
+   form produced for a Cartesian complex assignment.  Pair them before doing
+   any load so initialization does not read the object's old contents.
+
+   A standalone component store must preserve the other mathematical
+   Cartesian component, then recompute both physical slots.  */
+static void
+expand_complex_component_store (gimple_stmt_iterator *gsi)
+{
+  gimple *stmt = gsi_stmt (*gsi);
+  gcc_assert (floating_complex_component_store_p (stmt));
+
+  tree lhs = gimple_assign_lhs (stmt);
+  tree object = TREE_OPERAND (lhs, 0);
+  enum tree_code component = TREE_CODE (lhs);
+  tree real = NULL_TREE;
+  tree imag = NULL_TREE;
+
+  gimple_stmt_iterator next = *gsi;
+  gsi_next_nondebug (&next);
+  bool paired = !gsi_end_p (next);
+  if (paired)
+    {
+      gimple *next_stmt = gsi_stmt (next);
+      paired = (floating_complex_component_store_p (next_stmt)
+		&& !gimple_has_volatile_ops (stmt)
+		&& !gimple_has_volatile_ops (next_stmt));
+      if (paired)
+	{
+	  tree next_lhs = gimple_assign_lhs (next_stmt);
+	  tree next_object = TREE_OPERAND (next_lhs, 0);
+	  paired = (TREE_CODE (next_lhs) != component
+		    && operand_equal_p (object, next_object, 0));
+	  if (paired)
+	    {
+	      tree first_value = gimple_assign_rhs1 (stmt);
+	      tree second_value = gimple_assign_rhs1 (next_stmt);
+	      real = (component == REALPART_EXPR
+		      ? first_value : second_value);
+	      imag = (component == IMAGPART_EXPR
+		      ? first_value : second_value);
+	    }
+	}
+    }
+
+  if (!paired)
+    {
+      tree assigned = gimple_assign_rhs1 (stmt);
+      tree retained = extract_component (gsi, object,
+					 component == REALPART_EXPR, true);
+      real = component == REALPART_EXPR ? assigned : retained;
+      imag = component == IMAGPART_EXPR ? assigned : retained;
+    }
+
+  tree inner_type = TREE_TYPE (TREE_TYPE (object));
+  gcc_assert (polar_math_builtins_available (inner_type));
+  gimple_seq stmts = NULL;
+  location_t loc = gimple_location (stmt);
+  tree radius = build_polar_binary_call (&stmts, loc, inner_type,
+					 BUILT_IN_HYPOT, real, imag);
+  tree angle = build_polar_binary_call (&stmts, loc, inner_type,
+					BUILT_IN_ATAN2, imag, real);
+  gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+
+  if (paired)
+    {
+      rewrite_storage_component_store (gsi, object, false, radius);
+      tree next_object = TREE_OPERAND (gimple_assign_lhs (gsi_stmt (next)), 0);
+      rewrite_storage_component_store (&next, next_object, true, angle);
+
+      /* The outer walk advances once more after returning.  Leave it on the
+	 second rewritten raw store so neither raw slot is transformed again.  */
+      *gsi = next;
+      return;
+    }
+
+  tree radius_lhs = build1 (REALPART_EXPR, inner_type,
+			    unshare_expr (object));
+  gimple *radius_store = gimple_build_assign (radius_lhs, radius);
+  gimple_set_location (radius_store, loc);
+  gsi_insert_before (gsi, radius_store, GSI_SAME_STMT);
+  rewrite_storage_component_store (gsi, object, true, angle);
+}
 
 /* Generate code at the entry point of the function to initialize the
    component variables for a complex parameter.  */
@@ -837,7 +1092,7 @@ update_phi_components (basic_block bb)
 	      for (j = 0; j < 2; j++)
 		if (p[j])
 		  {
-		    comp = extract_component (NULL, arg, j > 0, false, true);
+		    comp = extract_storage_component (NULL, arg, j > 0, false, true);
 		    if (TREE_CODE (comp) == SSA_NAME
 			&& SSA_NAME_DEF_STMT (comp) == NULL)
 		      {
@@ -918,6 +1173,15 @@ expand_complex_move (gimple_stmt_iterator *gsi, tree type)
 	}
       else
 	{
+	  if (floating_complex_type_p (type)
+	      && gimple_assign_rhs_code (stmt) != COMPLEX_EXPR
+	      && TREE_CODE (rhs) != COMPLEX_CST)
+	    {
+	      r = extract_storage_component (gsi, rhs, false, true);
+	      i = extract_storage_component (gsi, rhs, true, true);
+	      update_polar_assignment (gsi, r, i);
+	      return;
+	    }
 	  if (gimple_assign_rhs_code (stmt) != COMPLEX_EXPR)
 	    {
 	      r = extract_component (gsi, rhs, 0, true);
@@ -940,8 +1204,16 @@ expand_complex_move (gimple_stmt_iterator *gsi, tree type)
       location_t loc;
 
       loc = gimple_location (stmt);
-      r = extract_component (gsi, rhs, 0, false);
-      i = extract_component (gsi, rhs, 1, false);
+      if (floating_complex_type_p (TREE_TYPE (rhs)))
+	{
+	  r = extract_storage_component (gsi, rhs, false, false);
+	  i = extract_storage_component (gsi, rhs, true, false);
+	}
+      else
+	{
+	  r = extract_component (gsi, rhs, 0, false);
+	  i = extract_component (gsi, rhs, 1, false);
+	}
 
       x = build1 (REALPART_EXPR, inner_type, unshare_expr (lhs));
       t = gimple_build_assign (x, r);
@@ -1126,11 +1398,10 @@ expand_complex_libcall (gimple_stmt_iterator *gsi, tree type, tree ar, tree ai,
   return lhs;
 }
 
-/* This experimental fork uses a polar working representation for floating
-   complex multiplication and division.  The public C object representation
-   remains a pair of real and imaginary components at this pass boundary; a
-   physical ABI change requires all component extraction, construction, call,
-   constant-folding, and library boundaries to change together.  */
+/* ICK uses a polar working and physical representation for floating complex
+   values.  Calls between ICK-compiled units therefore carry (radius, angle),
+   not the Cartesian complex ABI used by ordinary GCC and Clang.  External
+   boundaries must expose scalar or array components instead.  */
 
 static bool
 polar_math_builtins_available (tree type)
@@ -1172,57 +1443,34 @@ build_polar_binary_call (gimple_seq *stmts, location_t loc, tree type,
 }
 
 static void
-expand_complex_multiplication_polar (gimple_seq *stmts, location_t loc,
-				     tree type, tree ar, tree ai,
-				     tree br, tree bi,
-				     tree *rr, tree *ri)
+expand_complex_multiplication_polar (gimple_stmt_iterator *gsi, tree type,
+				     tree a_radius, tree a_angle,
+				     tree b_radius, tree b_angle)
 {
-  tree a_radius = build_polar_binary_call (stmts, loc, type,
-					   BUILT_IN_HYPOT, ar, ai);
-  tree b_radius = build_polar_binary_call (stmts, loc, type,
-					   BUILT_IN_HYPOT, br, bi);
-  tree a_angle = build_polar_binary_call (stmts, loc, type,
-					  BUILT_IN_ATAN2, ai, ar);
-  tree b_angle = build_polar_binary_call (stmts, loc, type,
-					  BUILT_IN_ATAN2, bi, br);
-  tree radius = gimple_build (stmts, loc, MULT_EXPR, type,
+  gimple_seq stmts = NULL;
+  location_t loc = gimple_location (gsi_stmt (*gsi));
+  tree radius = gimple_build (&stmts, loc, MULT_EXPR, type,
 			      a_radius, b_radius);
-  tree angle = gimple_build (stmts, loc, PLUS_EXPR, type,
+  tree angle = gimple_build (&stmts, loc, PLUS_EXPR, type,
 			     a_angle, b_angle);
-  tree cosine = build_polar_unary_call (stmts, loc, type,
-					BUILT_IN_COS, angle);
-  tree sine = build_polar_unary_call (stmts, loc, type,
-				      BUILT_IN_SIN, angle);
-
-  *rr = gimple_build (stmts, loc, MULT_EXPR, type, radius, cosine);
-  *ri = gimple_build (stmts, loc, MULT_EXPR, type, radius, sine);
+  gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+  update_polar_assignment (gsi, radius, angle);
 }
 
 static void
-expand_complex_division_polar (gimple_seq *stmts, location_t loc,
-			       tree type, tree ar, tree ai,
-			       tree br, tree bi, enum tree_code code,
-			       tree *rr, tree *ri)
+expand_complex_division_polar (gimple_stmt_iterator *gsi, tree type,
+			       tree a_radius, tree a_angle,
+			       tree b_radius, tree b_angle,
+			       enum tree_code code)
 {
-  tree a_radius = build_polar_binary_call (stmts, loc, type,
-					   BUILT_IN_HYPOT, ar, ai);
-  tree b_radius = build_polar_binary_call (stmts, loc, type,
-					   BUILT_IN_HYPOT, br, bi);
-  tree a_angle = build_polar_binary_call (stmts, loc, type,
-					  BUILT_IN_ATAN2, ai, ar);
-  tree b_angle = build_polar_binary_call (stmts, loc, type,
-					  BUILT_IN_ATAN2, bi, br);
-  tree radius = gimple_build (stmts, loc, code, type,
+  gimple_seq stmts = NULL;
+  location_t loc = gimple_location (gsi_stmt (*gsi));
+  tree radius = gimple_build (&stmts, loc, code, type,
 			      a_radius, b_radius);
-  tree angle = gimple_build (stmts, loc, MINUS_EXPR, type,
+  tree angle = gimple_build (&stmts, loc, MINUS_EXPR, type,
 			     a_angle, b_angle);
-  tree cosine = build_polar_unary_call (stmts, loc, type,
-					BUILT_IN_COS, angle);
-  tree sine = build_polar_unary_call (stmts, loc, type,
-				      BUILT_IN_SIN, angle);
-
-  *rr = gimple_build (stmts, loc, MULT_EXPR, type, radius, cosine);
-  *ri = gimple_build (stmts, loc, MULT_EXPR, type, radius, sine);
+  gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+  update_polar_assignment (gsi, radius, angle);
 }
 
 /* Perform a complex multiplication on two complex constants A, B represented
@@ -1267,16 +1515,6 @@ expand_complex_multiplication (gimple_stmt_iterator *gsi, tree type,
   tree inner_type = TREE_TYPE (type);
   location_t loc = gimple_location (gsi_stmt (*gsi));
   gimple_seq stmts = NULL;
-
-  if (SCALAR_FLOAT_TYPE_P (inner_type)
-      && polar_math_builtins_available (inner_type))
-    {
-      expand_complex_multiplication_polar (&stmts, loc, inner_type,
-					   ar, ai, br, bi, &rr, &ri);
-      gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
-      update_complex_assignment (gsi, rr, ri);
-      return;
-    }
 
   if (al < bl)
     {
@@ -1628,16 +1866,6 @@ expand_complex_division (gimple_stmt_iterator *gsi, tree type,
 
   tree inner_type = TREE_TYPE (type);
 
-  if (SCALAR_FLOAT_TYPE_P (inner_type)
-      && polar_math_builtins_available (inner_type))
-    {
-      expand_complex_division_polar (&stmts, loc, inner_type,
-				     ar, ai, br, bi, code, &rr, &ri);
-      gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
-      update_complex_assignment (gsi, rr, ri);
-      return;
-    }
-
   switch (PAIR (al, bl))
     {
     case PAIR (ONLY_REAL, ONLY_REAL):
@@ -1875,6 +2103,15 @@ gimple_expand_builtin_cabs (gimple_stmt_iterator *gsi, gimple *old_stmt)
   if (!lhs)
     return;
 
+  if (floating_complex_type_p (TREE_TYPE (arg)))
+    {
+      tree radius = extract_storage_component (gsi, arg, false, true);
+      new_stmt = gimple_build_assign (lhs, radius);
+      gimple_set_location (new_stmt, gimple_location (old_stmt));
+      gsi_replace (gsi, new_stmt, true);
+      return;
+    }
+
   real_part = extract_component (gsi, arg, false, true);
   imag_part = extract_component (gsi, arg, true, true);
   location_t loc = gimple_location (old_stmt);
@@ -1932,6 +2169,133 @@ gimple_expand_builtin_cabs (gimple_stmt_iterator *gsi, gimple *old_stmt)
   gsi_replace (gsi, new_stmt, true);
 }
 
+/* Return the stored phase directly when it is already principal.  In
+   particular, reconstructing +pi through sin/cos can turn it into -pi after
+   rounding (notably for float).  Multiplication and division can move the
+   stored phase outside [-pi,pi], so normalize only that case.  */
+static void
+gimple_expand_builtin_carg (gimple_stmt_iterator *gsi, gimple *old_stmt)
+{
+  tree lhs = gimple_call_lhs (old_stmt);
+  if (!lhs)
+    return;
+  tree arg = gimple_call_arg (old_stmt, 0);
+  tree inner_type = TREE_TYPE (TREE_TYPE (arg));
+  tree angle = extract_storage_component (gsi, arg, true, true);
+  location_t loc = gimple_location (old_stmt);
+  gimple_seq stmts = NULL;
+  tree direction_real = build_polar_unary_call (&stmts, loc, inner_type,
+						 BUILT_IN_COS, angle);
+  tree direction_imag = build_polar_unary_call (&stmts, loc, inner_type,
+						 BUILT_IN_SIN, angle);
+  tree principal = build_polar_binary_call (&stmts, loc, inner_type,
+					    BUILT_IN_ATAN2,
+					    direction_imag, direction_real);
+
+  tree pi = build_real_truncate (inner_type, dconst_pi ());
+  tree negative_pi = fold_build1 (NEGATE_EXPR, inner_type, pi);
+  tree above_lower_bound = gimple_build (&stmts, loc, GE_EXPR,
+					 boolean_type_node, angle, negative_pi);
+  tree below_upper_bound = gimple_build (&stmts, loc, LE_EXPR,
+					 boolean_type_node, angle, pi);
+  tree in_principal_range = gimple_build (&stmts, loc, BIT_AND_EXPR,
+					  boolean_type_node,
+					  above_lower_bound,
+					  below_upper_bound);
+  tree result = gimple_build (&stmts, loc, COND_EXPR, inner_type,
+			      in_principal_range, angle, principal);
+  gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+  gimple *new_stmt = gimple_build_assign (lhs, result);
+  gimple_set_location (new_stmt, loc);
+  gsi_replace (gsi, new_stmt, true);
+}
+
+/* ICK complex floor/ceil: round only the modulus and preserve the argument. */
+static void
+gimple_expand_builtin_cround (gimple_stmt_iterator *gsi, gimple *old_stmt,
+			      enum built_in_function fncode)
+{
+  tree lhs = gimple_call_lhs (old_stmt);
+  if (!lhs)
+    return;
+
+  tree arg = gimple_call_arg (old_stmt, 0);
+  tree inner_type = TREE_TYPE (TREE_TYPE (arg));
+  tree radius = extract_storage_component (gsi, arg, false, true);
+  tree angle = extract_storage_component (gsi, arg, true, true);
+  enum built_in_function rounding
+    = (fncode == BUILT_IN_CFLOOR
+       || fncode == BUILT_IN_CFLOORF
+       || fncode == BUILT_IN_CFLOORL)
+      ? BUILT_IN_FLOOR : BUILT_IN_CEIL;
+
+  gimple_seq stmts = NULL;
+  tree rounded = build_polar_unary_call (&stmts, gimple_location (old_stmt),
+					 inner_type, rounding, radius);
+  gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
+
+  tree rhs = build_ick_physical_complex_value (TREE_TYPE (arg), rounded,
+					       angle);
+  gimple *new_stmt = gimple_build_assign (lhs, rhs);
+  gimple_set_location (new_stmt, gimple_location (old_stmt));
+  gsi_replace (gsi, new_stmt, true);
+  update_complex_components (gsi, new_stmt, rounded, angle);
+}
+
+/* A complex constant can appear directly as a GIMPLE_CALL argument rather
+   than first passing through a complex assignment.  Materialize such constants
+   as the ICK physical pair before the call so ICK-to-ICK call boundaries are
+   consistently polar.  */
+static void
+polarize_complex_call_arguments (gimple_stmt_iterator *gsi, gimple *stmt)
+{
+  gcc_assert (is_gimple_call (stmt));
+  bool changed = false;
+  for (unsigned int i = 0; i < gimple_call_num_args (stmt); ++i)
+    {
+      tree arg = gimple_call_arg (stmt, i);
+      if (TREE_CODE (arg) != COMPLEX_CST
+	  || !floating_complex_type_p (TREE_TYPE (arg)))
+	continue;
+
+      tree radius, angle;
+      ick_complex_cst_storage_parts (arg, &radius, &angle);
+      tree tmp = make_ssa_name (TREE_TYPE (arg));
+      tree pair = build_ick_physical_complex_value (TREE_TYPE (arg), radius,
+						    angle);
+      gimple *assign = gimple_build_assign (tmp, pair);
+      gimple_set_location (assign, gimple_location (stmt));
+      gsi_insert_before (gsi, assign, GSI_SAME_STMT);
+      gimple_call_set_arg (as_a <gcall *> (stmt), i, tmp);
+      changed = true;
+    }
+  if (changed)
+    update_stmt (stmt);
+}
+
+/* A direct complex constant return has no assignment for the normal complex
+   move lowering to rewrite.  Materialize the physical pair explicitly so the
+   ICK-to-ICK return ABI is independent of optimization level.  */
+static void
+polarize_complex_constant_return (gimple_stmt_iterator *gsi)
+{
+  gimple *stmt = gsi_stmt (*gsi);
+  if (!floating_complex_constant_return_p (stmt))
+    return;
+
+  tree value = gimple_return_retval (as_a <greturn *> (stmt));
+  tree radius, angle;
+  ick_complex_cst_storage_parts (value, &radius, &angle);
+  tree tmp = make_ssa_name (TREE_TYPE (value));
+  tree pair = build_ick_physical_complex_value (TREE_TYPE (value), radius,
+						angle);
+  gimple *assign = gimple_build_assign (tmp, pair);
+  gimple_set_location (assign, gimple_location (stmt));
+  gsi_insert_before (gsi, assign, GSI_SAME_STMT);
+  gimple_return_set_retval (as_a <greturn *> (stmt), tmp);
+  update_stmt (stmt);
+}
+
 /* Process one statement.  If we identify a complex operation, expand it.  */
 
 static void
@@ -1944,18 +2308,47 @@ expand_complex_operations_1 (gimple_stmt_iterator *gsi)
   enum tree_code code;
   if (gimple_code (stmt) == GIMPLE_CALL)
     {
-      switch (gimple_call_combined_fn (stmt))
+      enum built_in_function fncode = normal_builtin_code (stmt);
+      switch (fncode)
 	{
-	CASE_CFN_CABS:
+	case BUILT_IN_CABS:
+	case BUILT_IN_CABSF:
+	case BUILT_IN_CABSL:
 	  gimple_expand_builtin_cabs (gsi, stmt);
+	  return;
+	case BUILT_IN_CARG:
+	case BUILT_IN_CARGF:
+	case BUILT_IN_CARGL:
+	  gimple_expand_builtin_carg (gsi, stmt);
+	  return;
+	case BUILT_IN_CFLOOR:
+	case BUILT_IN_CFLOORF:
+	case BUILT_IN_CFLOORL:
+	case BUILT_IN_CCEIL:
+	case BUILT_IN_CCEILF:
+	case BUILT_IN_CCEILL:
+	  gimple_expand_builtin_cround (gsi, stmt, fncode);
 	  return;
 	default:;
 	}
+      polarize_complex_call_arguments (gsi, stmt);
     }
 
   if (gimple_code (stmt) == GIMPLE_ASM)
     {
       expand_complex_asm (gsi);
+      return;
+    }
+
+  if (gimple_code (stmt) == GIMPLE_RETURN)
+    {
+      polarize_complex_constant_return (gsi);
+      return;
+    }
+
+  if (floating_complex_component_store_p (stmt))
+    {
+      expand_complex_component_store (gsi);
       return;
     }
 
@@ -2011,10 +2404,12 @@ expand_complex_operations_1 (gimple_stmt_iterator *gsi)
 		 && TREE_CODE (lhs) == SSA_NAME)
 	  {
 	    rhs = gimple_assign_rhs1 (stmt);
+	    /* ICK Cartesian extraction emits scalar math statements for a
+	       nonconstant polar value, so request a GIMPLE operand here.  */
 	    rhs = extract_component (gsi, TREE_OPERAND (rhs, 0),
 		                     gimple_assign_rhs_code (stmt)
 				       == IMAGPART_EXPR,
-				     false);
+				     true);
 	    gimple_assign_set_rhs_from_tree (gsi, rhs);
 	    stmt = gsi_stmt (*gsi);
 	    update_stmt (stmt);
@@ -2035,6 +2430,36 @@ expand_complex_operations_1 (gimple_stmt_iterator *gsi)
     {
       ac = gimple_cond_lhs (stmt);
       bc = gimple_cond_rhs (stmt);
+    }
+
+  if (SCALAR_FLOAT_TYPE_P (inner_type)
+      && (code == MULT_EXPR
+	  || code == TRUNC_DIV_EXPR
+	  || code == CEIL_DIV_EXPR
+	  || code == FLOOR_DIV_EXPR
+	  || code == ROUND_DIV_EXPR
+	  || code == RDIV_EXPR))
+    {
+      tree a_radius = extract_storage_component (gsi, ac, false, true);
+      tree a_angle = extract_storage_component (gsi, ac, true, true);
+      tree b_radius, b_angle;
+      if (ac == bc)
+	b_radius = a_radius, b_angle = a_angle;
+      else
+	{
+	  b_radius = extract_storage_component (gsi, bc, false, true);
+	  b_angle = extract_storage_component (gsi, bc, true, true);
+	}
+
+      if (code == MULT_EXPR)
+	expand_complex_multiplication_polar (gsi, inner_type,
+					     a_radius, a_angle,
+					     b_radius, b_angle);
+      else
+	expand_complex_division_polar (gsi, inner_type,
+				       a_radius, a_angle,
+				       b_radius, b_angle, code);
+      return;
     }
 
   ar = extract_component (gsi, ac, false, true);
@@ -2167,7 +2592,7 @@ tree_lower_complex (void)
 		      || is_gimple_min_invariant (op))
 		    continue;
 		  tree arg = gimple_phi_arg_def (phis_to_revisit[j], l);
-		  op = extract_component (NULL, arg, k > 0, false, false);
+		  op = extract_storage_component (NULL, arg, k > 0, false, false);
 		  SET_PHI_ARG_DEF (phi, l, op);
 		}
 	    }

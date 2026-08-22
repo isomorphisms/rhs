@@ -1855,8 +1855,11 @@ sem_variable::equals (tree t1, tree t2)
       return return_with_debug (FIXED_VALUES_IDENTICAL (TREE_FIXED_CST (t1),
 							TREE_FIXED_CST (t2)));
     case COMPLEX_CST:
-      return (sem_variable::equals (TREE_REALPART (t1), TREE_REALPART (t2))
-	      && sem_variable::equals (TREE_IMAGPART (t1), TREE_IMAGPART (t2)));
+      return (ICK_PHYSICAL_COMPLEX_CST_P (t1)
+	      == ICK_PHYSICAL_COMPLEX_CST_P (t2)
+	      && sem_variable::equals (TREE_REALPART (t1), TREE_REALPART (t2))
+	      && sem_variable::equals (TREE_IMAGPART (t1),
+				       TREE_IMAGPART (t2)));
     case REAL_CST:
       /* Real constants are the same only if the same width of type.  */
       if (TYPE_PRECISION (TREE_TYPE (t1)) != TYPE_PRECISION (TREE_TYPE (t2)))

@@ -139,6 +139,11 @@ pack_ts_base_value_fields (struct bitpack_d *bp, tree expr)
       bp_pack_value (bp, CALL_EXPR_BY_DESCRIPTOR (expr), 1);
       bp_pack_value (bp, 0, 8);
     }
+  else if (TREE_CODE (expr) == COMPLEX_CST)
+    {
+      bp_pack_value (bp, ICK_PHYSICAL_COMPLEX_CST_P (expr), 1);
+      bp_pack_value (bp, 0, 8);
+    }
   else
     bp_pack_value (bp, 0, 9);
 }
