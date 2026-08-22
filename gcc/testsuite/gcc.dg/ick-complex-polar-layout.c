@@ -38,6 +38,31 @@ close_enough_float (float actual, float expected)
   return difference < 2e-6f && difference > -2e-6f;
 }
 
+/* Exercise both directions of constant folding through complete object
+   bytes.  The bytes are physical polar storage, while component access is
+   semantic Cartesian access.  */
+__attribute__ ((noinline, noipa))
+static int
+fold_semantic_constant_to_object_bytes (void)
+{
+  double _Complex value = 3.0 + 4.0i;
+  double slots[2];
+  __builtin_memcpy (slots, &value, sizeof slots);
+  return (close_enough (slots[0], 5.0)
+	  && close_enough (slots[1], __builtin_atan2 (4.0, 3.0)));
+}
+
+__attribute__ ((noinline, noipa))
+static int
+fold_object_bytes_to_semantic_constant (void)
+{
+  double slots[2] = { 5.0, 0x1.dac670561bb4fp-1 };
+  double _Complex value;
+  __builtin_memcpy (&value, slots, sizeof value);
+  return (close_enough (__real__ value, 3.0)
+	  && close_enough (__imag__ value, 4.0));
+}
+
 __attribute__ ((noinline, noipa))
 static double _Complex
 bounce (double _Complex value)
@@ -202,6 +227,12 @@ main (void)
   if (!close_enough (direct_constant_raw[0], 5.0)
       || !close_enough (direct_constant_raw[1], raw[1]))
     return 13;
+
+  if (!fold_semantic_constant_to_object_bytes ())
+    return 14;
+
+  if (!fold_object_bytes_to_semantic_constant ())
+    return 15;
 
   return 0;
 }

@@ -64,7 +64,6 @@ along with GCC; see the file COPYING3.  If not see
 #include "asan.h"
 #include "recog.h"
 #include "gimple-expr.h"
-#include "realmpfr.h"
 
 /* The (assembler) name of the first globally-visible object output.  */
 extern GTY(()) const char *first_global_object_name;
@@ -3400,8 +3399,9 @@ const_hash_1 (const tree exp)
       break;
 
     case COMPLEX_CST:
-      return (const_hash_1 (TREE_REALPART (exp)) * 5
-	      + const_hash_1 (TREE_IMAGPART (exp)));
+      return ((const_hash_1 (TREE_REALPART (exp)) * 5
+	       + const_hash_1 (TREE_IMAGPART (exp))) * 2
+	      + ICK_PHYSICAL_COMPLEX_CST_P (exp));
 
     case VECTOR_CST:
       {
@@ -3553,7 +3553,9 @@ compare_constant (const tree t1, const tree t2)
 			   TREE_STRING_LENGTH (t1)));
 
     case COMPLEX_CST:
-      return (compare_constant (TREE_REALPART (t1), TREE_REALPART (t2))
+      return (ICK_PHYSICAL_COMPLEX_CST_P (t1)
+	      == ICK_PHYSICAL_COMPLEX_CST_P (t2)
+	      && compare_constant (TREE_REALPART (t1), TREE_REALPART (t2))
 	      && compare_constant (TREE_IMAGPART (t1), TREE_IMAGPART (t2)));
 
     case VECTOR_CST:
@@ -5439,39 +5441,6 @@ output_constructor (tree, unsigned HOST_WIDE_INT, unsigned int, bool,
 
    If REVERSE is true, EXP is output in reverse storage order.  */
 
-/* Convert a semantic Cartesian COMPLEX_CST to ICK's physical
-   (modulus, argument) pair using MPFR, then round each component to the
-   actual target real type.  The zero value has canonical argument +0.  */
-static void
-ick_polar_complex_constant_parts (tree exp, tree *radius, tree *angle)
-{
-  gcc_assert (TREE_CODE (exp) == COMPLEX_CST);
-  tree inner_type = TREE_TYPE (TREE_TYPE (exp));
-  tree real = TREE_REALPART (exp);
-  tree imag = TREE_IMAGPART (exp);
-  gcc_assert (SCALAR_FLOAT_TYPE_P (inner_type));
-  gcc_assert (TREE_CODE (real) == REAL_CST && TREE_CODE (imag) == REAL_CST);
-
-  mpfr_prec_t precision = 2 * TYPE_PRECISION (inner_type);
-  if (precision < 256)
-    precision = 256;
-
-  auto_mpfr x (precision), y (precision), r (precision), theta (precision);
-  mpfr_from_real (x, &TREE_REAL_CST (real), MPFR_RNDN);
-  mpfr_from_real (y, &TREE_REAL_CST (imag), MPFR_RNDN);
-  mpfr_hypot (r, x, y, MPFR_RNDN);
-  if (mpfr_zero_p (r))
-    mpfr_set_zero (theta, 1);
-  else
-    mpfr_atan2 (theta, y, x, MPFR_RNDN);
-
-  REAL_VALUE_TYPE rv, av;
-  real_from_mpfr (&rv, r, inner_type, MPFR_RNDN);
-  real_from_mpfr (&av, theta, inner_type, MPFR_RNDN);
-  *radius = build_real (inner_type, rv);
-  *angle = build_real (inner_type, av);
-}
-
 static unsigned HOST_WIDE_INT
 output_constant (tree exp, unsigned HOST_WIDE_INT size, unsigned int align,
 		 bool reverse, bool merge_strings)
@@ -5596,7 +5565,7 @@ output_constant (tree exp, unsigned HOST_WIDE_INT size, unsigned int align,
       if (SCALAR_FLOAT_TYPE_P (TREE_TYPE (TREE_TYPE (exp))))
 	{
 	  tree radius, angle;
-	  ick_polar_complex_constant_parts (exp, &radius, &angle);
+	  ick_complex_cst_storage_parts (exp, &radius, &angle);
 	  output_constant (radius, thissize / 2, align, reverse, false);
 	  output_constant (angle, thissize / 2,
 			   min_align (align, BITS_PER_UNIT * (thissize / 2)),

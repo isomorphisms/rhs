@@ -20,9 +20,11 @@ with Clang's Cartesian representation.
 
 This draft is qualified only for the exercised leaf-object pattern.  The
 focused suite covers direct returns of complex constants and lvalue stores
-through `__real__` or `__imag__` on nonvolatile objects.  Volatile complex
-objects, optimized bytewise copies or views of complex object storage, and
-calls to external functions that accept or return `_Complex` still have
+through `__real__` or `__imag__` on nonvolatile objects.  It also covers
+compile-time conversion of semantic complex constants to complete physical
+object bytes and of complete physical object images back to semantic
+components.  Partial or volatile bytewise views of complex storage, and calls
+to external functions that accept or return `_Complex`, still have
 representation gaps.  The Wegert fixture uses none of those operations; they
 remain blockers to treating this as a general maintained `_Complex`
 implementation.

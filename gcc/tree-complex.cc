@@ -47,7 +47,6 @@ along with GCC; see the file COPYING3.  If not see
 #include "builtins.h"
 #include "optabs-tree.h"
 #include "tree-ssa-dce.h"
-#include "realmpfr.h"
 
 /* For each complex ssa name, a lattice value.  We're interested in finding
    out whether a complex number is degenerate in some way, having only real
@@ -711,31 +710,15 @@ static tree build_polar_unary_call (gimple_seq *, location_t, tree,
 static tree build_polar_binary_call (gimple_seq *, location_t, tree,
 				     enum built_in_function, tree, tree);
 
-/* Convert one Cartesian tree constant to ICK's physical polar pair.  */
-static void
-polar_constant_parts (tree t, tree *radius, tree *angle)
+/* Build a value whose components already are ICK's physical pair.  Constants
+   retain that provenance so later folding and constant-pool output do not
+   mistake (modulus, argument) for semantic Cartesian components.  */
+static tree
+build_ick_physical_complex_value (tree type, tree radius, tree angle)
 {
-  tree inner_type = TREE_TYPE (TREE_TYPE (t));
-  tree real = TREE_REALPART (t);
-  tree imag = TREE_IMAGPART (t);
-
-  mpfr_prec_t precision = 2 * TYPE_PRECISION (inner_type);
-  if (precision < 256)
-    precision = 256;
-  auto_mpfr x (precision), y (precision), r (precision), theta (precision);
-  mpfr_from_real (x, &TREE_REAL_CST (real), MPFR_RNDN);
-  mpfr_from_real (y, &TREE_REAL_CST (imag), MPFR_RNDN);
-  mpfr_hypot (r, x, y, MPFR_RNDN);
-  if (mpfr_zero_p (r))
-    mpfr_set_zero (theta, 1);
-  else
-    mpfr_atan2 (theta, y, x, MPFR_RNDN);
-
-  REAL_VALUE_TYPE rv, av;
-  real_from_mpfr (&rv, r, inner_type, MPFR_RNDN);
-  real_from_mpfr (&av, theta, inner_type, MPFR_RNDN);
-  *radius = build_real (inner_type, rv);
-  *angle = build_real (inner_type, av);
+  if (TREE_CODE (radius) == REAL_CST && TREE_CODE (angle) == REAL_CST)
+    return build_ick_physical_complex_cst (type, radius, angle);
+  return build2 (COMPLEX_EXPR, type, radius, angle);
 }
 
 /* Extract a raw physical slot.  For floating complex this is modulus for
@@ -751,7 +734,7 @@ extract_storage_component (gimple_stmt_iterator *gsi, tree t,
       if (floating_complex_type_p (TREE_TYPE (t)))
 	{
 	  tree radius, angle;
-	  polar_constant_parts (t, &radius, &angle);
+	  ick_complex_cst_storage_parts (t, &radius, &angle);
 	  return second_slot_p ? angle : radius;
 	}
       return second_slot_p ? TREE_IMAGPART (t) : TREE_REALPART (t);
@@ -852,7 +835,11 @@ extract_component (gimple_stmt_iterator *gsi, tree t, bool imagpart_p,
     return extract_storage_component (gsi, t, imagpart_p, gimple_p, phiarg_p);
 
   if (TREE_CODE (t) == COMPLEX_CST)
-    return imagpart_p ? TREE_IMAGPART (t) : TREE_REALPART (t);
+    {
+      tree real, imag;
+      ick_complex_cst_semantic_parts (t, &real, &imag);
+      return imagpart_p ? imag : real;
+    }
 
   gcc_assert (gsi && gimple_p);
   tree inner_type = TREE_TYPE (TREE_TYPE (t));
@@ -909,7 +896,9 @@ static void
 update_polar_assignment (gimple_stmt_iterator *gsi, tree radius, tree angle)
 {
   gimple *old_stmt = gsi_stmt (*gsi);
-  gimple_assign_set_rhs_with_ops (gsi, COMPLEX_EXPR, radius, angle);
+  tree type = TREE_TYPE (gimple_assign_lhs (old_stmt));
+  tree value = build_ick_physical_complex_value (type, radius, angle);
+  gimple_assign_set_rhs_from_tree (gsi, value);
   gimple *stmt = gsi_stmt (*gsi);
   update_stmt (stmt);
   if (maybe_clean_or_replace_eh_stmt (old_stmt, stmt))
@@ -2245,7 +2234,8 @@ gimple_expand_builtin_cround (gimple_stmt_iterator *gsi, gimple *old_stmt,
 					 inner_type, rounding, radius);
   gsi_insert_seq_before (gsi, stmts, GSI_SAME_STMT);
 
-  tree rhs = build2 (COMPLEX_EXPR, TREE_TYPE (arg), rounded, angle);
+  tree rhs = build_ick_physical_complex_value (TREE_TYPE (arg), rounded,
+					       angle);
   gimple *new_stmt = gimple_build_assign (lhs, rhs);
   gimple_set_location (new_stmt, gimple_location (old_stmt));
   gsi_replace (gsi, new_stmt, true);
@@ -2269,9 +2259,10 @@ polarize_complex_call_arguments (gimple_stmt_iterator *gsi, gimple *stmt)
 	continue;
 
       tree radius, angle;
-      polar_constant_parts (arg, &radius, &angle);
+      ick_complex_cst_storage_parts (arg, &radius, &angle);
       tree tmp = make_ssa_name (TREE_TYPE (arg));
-      tree pair = build2 (COMPLEX_EXPR, TREE_TYPE (arg), radius, angle);
+      tree pair = build_ick_physical_complex_value (TREE_TYPE (arg), radius,
+						    angle);
       gimple *assign = gimple_build_assign (tmp, pair);
       gimple_set_location (assign, gimple_location (stmt));
       gsi_insert_before (gsi, assign, GSI_SAME_STMT);
@@ -2294,9 +2285,10 @@ polarize_complex_constant_return (gimple_stmt_iterator *gsi)
 
   tree value = gimple_return_retval (as_a <greturn *> (stmt));
   tree radius, angle;
-  polar_constant_parts (value, &radius, &angle);
+  ick_complex_cst_storage_parts (value, &radius, &angle);
   tree tmp = make_ssa_name (TREE_TYPE (value));
-  tree pair = build2 (COMPLEX_EXPR, TREE_TYPE (value), radius, angle);
+  tree pair = build_ick_physical_complex_value (TREE_TYPE (value), radius,
+						angle);
   gimple *assign = gimple_build_assign (tmp, pair);
   gimple_set_location (assign, gimple_location (stmt));
   gsi_insert_before (gsi, assign, GSI_SAME_STMT);

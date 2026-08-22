@@ -196,6 +196,18 @@ jobs:
           ! grep -Eiq 'hypot|atan2|cos|sin|__mul[sdx]c3' \
             /tmp/polar-multiply.s
 
+      - name: Verify complex object-byte constant folding
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ick="$RUNNER_TEMP/ick-aarch64-relocated/bin/ick-aarch64"
+          dump=/tmp/ick-complex-object-byte-fold.optimized
+          "$ick" -O2 -fdump-tree-optimized="$dump" -S \
+            gcc/testsuite/gcc.dg/ick-complex-object-byte-fold.c \
+            -o /tmp/ick-complex-object-byte-fold.s
+          test "$(grep -c 'return 1;' "$dump")" -eq 2
+          ! grep -q '__builtin_memcpy' "$dump"
+
       - name: Run focused polar and radial tests
         shell: bash
         run: |

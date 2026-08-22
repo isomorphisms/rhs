@@ -76,6 +76,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "asan.h"
 #include "ubsan.h"
 #include "attr-callback.h"
+#include "realmpfr.h"
 
 /* Names of tree components.
    Used for printing out the tree and error messages.  */
@@ -2652,6 +2653,120 @@ build_complex (tree type, tree real, tree imag)
   TREE_TYPE (t) = type ? type : build_complex_type (TREE_TYPE (real));
   TREE_OVERFLOW (t) = TREE_OVERFLOW (real) | TREE_OVERFLOW (imag);
   return t;
+}
+
+/* Build a floating COMPLEX_CST whose two components are already ICK's
+   physical (modulus, argument) pair rather than semantic Cartesian values.  */
+
+tree
+build_ick_physical_complex_cst (tree type, tree radius, tree angle)
+{
+  gcc_assert (TREE_CODE (type) == COMPLEX_TYPE
+	      && SCALAR_FLOAT_TYPE_P (TREE_TYPE (type)));
+  gcc_assert (TREE_CODE (radius) == REAL_CST
+	      && TREE_CODE (angle) == REAL_CST);
+
+  tree value = build_complex (type, radius, angle);
+  ICK_PHYSICAL_COMPLEX_CST_P (value) = 1;
+  return value;
+}
+
+/* Use enough intermediate precision that conversion is rounded only when the
+   result is returned to the target component type.  */
+
+static mpfr_prec_t
+ick_complex_conversion_precision (tree inner_type)
+{
+  mpfr_prec_t precision = 2 * TYPE_PRECISION (inner_type);
+  return precision < 256 ? 256 : precision;
+}
+
+/* Return the physical storage pair for a floating complex constant.  Tagged
+   constants already contain that pair; untagged constants have semantic
+   Cartesian components and must be converted exactly once.  */
+
+void
+ick_complex_cst_storage_parts (const_tree value, tree *radius, tree *angle)
+{
+  gcc_assert (TREE_CODE (value) == COMPLEX_CST);
+  tree inner_type = TREE_TYPE (TREE_TYPE (value));
+  gcc_assert (SCALAR_FLOAT_TYPE_P (inner_type));
+
+  if (ICK_PHYSICAL_COMPLEX_CST_P (value))
+    {
+      *radius = TREE_REALPART (value);
+      *angle = TREE_IMAGPART (value);
+      return;
+    }
+
+  tree real = TREE_REALPART (value);
+  tree imag = TREE_IMAGPART (value);
+  gcc_assert (TREE_CODE (real) == REAL_CST && TREE_CODE (imag) == REAL_CST);
+
+  mpfr_prec_t precision = ick_complex_conversion_precision (inner_type);
+  auto_mpfr x (precision), y (precision), r (precision), theta (precision);
+  mpfr_from_real (x, &TREE_REAL_CST (real), MPFR_RNDN);
+  mpfr_from_real (y, &TREE_REAL_CST (imag), MPFR_RNDN);
+  mpfr_hypot (r, x, y, MPFR_RNDN);
+  if (mpfr_zero_p (r))
+    mpfr_set_zero (theta, 1);
+  else
+    mpfr_atan2 (theta, y, x, MPFR_RNDN);
+
+  REAL_VALUE_TYPE radius_value, angle_value;
+  real_from_mpfr (&radius_value, r, inner_type, MPFR_RNDN);
+  real_from_mpfr (&angle_value, theta, inner_type, MPFR_RNDN);
+  *radius = build_real (inner_type, radius_value);
+  *angle = build_real (inner_type, angle_value);
+}
+
+/* Return semantic Cartesian components for a floating complex constant.
+   Untagged constants already have that meaning.  A tagged physical pair is
+   decoded here so native byte interpretation never leaks an untagged
+   (modulus, argument) pair back into semantic constant folding.  */
+
+void
+ick_complex_cst_semantic_parts (const_tree value, tree *real, tree *imag)
+{
+  gcc_assert (TREE_CODE (value) == COMPLEX_CST);
+  tree inner_type = TREE_TYPE (TREE_TYPE (value));
+  gcc_assert (SCALAR_FLOAT_TYPE_P (inner_type));
+
+  if (!ICK_PHYSICAL_COMPLEX_CST_P (value))
+    {
+      *real = TREE_REALPART (value);
+      *imag = TREE_IMAGPART (value);
+      return;
+    }
+
+  tree radius = TREE_REALPART (value);
+  tree angle = TREE_IMAGPART (value);
+  gcc_assert (TREE_CODE (radius) == REAL_CST
+	      && TREE_CODE (angle) == REAL_CST);
+
+  mpfr_prec_t precision = ick_complex_conversion_precision (inner_type);
+  auto_mpfr r (precision), theta (precision), x (precision), y (precision);
+  auto_mpfr cosine (precision), sine (precision);
+  mpfr_from_real (r, &TREE_REAL_CST (radius), MPFR_RNDN);
+  mpfr_from_real (theta, &TREE_REAL_CST (angle), MPFR_RNDN);
+  if (mpfr_zero_p (r))
+    {
+      mpfr_set_zero (x, 1);
+      mpfr_set_zero (y, 1);
+    }
+  else
+    {
+      mpfr_cos (cosine, theta, MPFR_RNDN);
+      mpfr_sin (sine, theta, MPFR_RNDN);
+      mpfr_mul (x, r, cosine, MPFR_RNDN);
+      mpfr_mul (y, r, sine, MPFR_RNDN);
+    }
+
+  REAL_VALUE_TYPE real_value, imag_value;
+  real_from_mpfr (&real_value, x, inner_type, MPFR_RNDN);
+  real_from_mpfr (&imag_value, y, inner_type, MPFR_RNDN);
+  *real = build_real (inner_type, real_value);
+  *imag = build_real (inner_type, imag_value);
 }
 
 /* Build a complex (inf +- 0i), such as for the result of cproj.

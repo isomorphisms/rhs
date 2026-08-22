@@ -4227,6 +4227,29 @@ vn_pp_nary_for_addr (const vec<vn_reference_op_s>& operands, tree ops[2])
   return false;
 }
 
+/* Return true when REF selects a language-level component of a floating
+   complex object before complex lowering.  Such a component cannot be
+   folded as one raw storage slot because ICK stores (modulus, argument).  */
+
+static bool
+ick_floating_complex_component_ref_p (tree ref)
+{
+  if (cfun->curr_properties & PROP_gimple_lcx)
+    return false;
+
+  while (ref && REFERENCE_CLASS_P (ref))
+    {
+      if ((TREE_CODE (ref) == REALPART_EXPR
+	   || TREE_CODE (ref) == IMAGPART_EXPR)
+	  && TREE_CODE (TREE_TYPE (TREE_OPERAND (ref, 0))) == COMPLEX_TYPE
+	  && SCALAR_FLOAT_TYPE_P
+	       (TREE_TYPE (TREE_TYPE (TREE_OPERAND (ref, 0)))))
+	return true;
+      ref = TREE_OPERAND (ref, 0);
+    }
+  return false;
+}
+
 /* Lookup OP in the current hash table, and return the resulting value
    number if it exists in the hash table.  Return NULL_TREE if it does
    not exist in the hash table or if the result field of the structure
@@ -4252,6 +4275,8 @@ vn_reference_lookup (tree op, tree vuse, vn_lookup_kind kind,
 
   if (vnresult)
     *vnresult = NULL;
+
+  bool ick_complex_component_p = ick_floating_complex_component_ref_p (op);
 
   vr1.vuse = vuse_ssa_val (vuse);
   vr1.operands = operands
@@ -4282,11 +4307,47 @@ vn_reference_lookup (tree op, tree vuse, vn_lookup_kind kind,
   vr1.offset = 0;
   vr1.max_size = -1;
   vr1.hashcode = vn_reference_compute_hash (&vr1);
-  if (mask == NULL_TREE)
+
+  /* Before complex lowering, fold a component only after reconstructing the
+     complete physical object and decoding it to semantic Cartesian form.  */
+  if (mask == NULL_TREE
+      && !redundant_store_removal_p
+      && (TREE_CODE (op) == REALPART_EXPR
+	  || TREE_CODE (op) == IMAGPART_EXPR)
+      && ick_complex_component_p)
+    {
+      tree complex_value
+	= vn_reference_lookup (TREE_OPERAND (op, 0), vuse, kind, NULL,
+			       tbaa_p, last_vuse_ptr, NULL_TREE, false);
+      tree complex_type = TREE_TYPE (TREE_OPERAND (op, 0));
+      HOST_WIDE_INT size = int_size_in_bytes (complex_type);
+      unsigned char buffer[64];
+
+      if (complex_value
+	  && CONSTANT_CLASS_P (complex_value)
+	  && size > 0
+	  && size <= (HOST_WIDE_INT) sizeof (buffer))
+	{
+	  int len = native_encode_expr (complex_value, buffer, size, -1);
+	  if (len == size)
+	    complex_value = native_interpret_expr (complex_type, buffer, len);
+	  else
+	    complex_value = NULL_TREE;
+	}
+
+      if (complex_value && TREE_CODE (complex_value) == COMPLEX_CST)
+	{
+	  tree real, imag;
+	  ick_complex_cst_semantic_parts (complex_value, &real, &imag);
+	  return TREE_CODE (op) == IMAGPART_EXPR ? imag : real;
+	}
+    }
+
+  if (mask == NULL_TREE && !ick_complex_component_p)
     if (tree cst = fully_constant_vn_reference_p (&vr1))
       return cst;
 
-  if (kind != VN_NOWALK && vr1.vuse)
+  if (kind != VN_NOWALK && vr1.vuse && !ick_complex_component_p)
     {
       vn_reference_t wvnresult;
       ao_ref r;
