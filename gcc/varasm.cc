@@ -3399,8 +3399,9 @@ const_hash_1 (const tree exp)
       break;
 
     case COMPLEX_CST:
-      return (const_hash_1 (TREE_REALPART (exp)) * 5
-	      + const_hash_1 (TREE_IMAGPART (exp)));
+      return ((const_hash_1 (TREE_REALPART (exp)) * 5
+	       + const_hash_1 (TREE_IMAGPART (exp))) * 2
+	      + ICK_PHYSICAL_COMPLEX_CST_P (exp));
 
     case VECTOR_CST:
       {
@@ -3552,7 +3553,9 @@ compare_constant (const tree t1, const tree t2)
 			   TREE_STRING_LENGTH (t1)));
 
     case COMPLEX_CST:
-      return (compare_constant (TREE_REALPART (t1), TREE_REALPART (t2))
+      return (ICK_PHYSICAL_COMPLEX_CST_P (t1)
+	      == ICK_PHYSICAL_COMPLEX_CST_P (t2)
+	      && compare_constant (TREE_REALPART (t1), TREE_REALPART (t2))
 	      && compare_constant (TREE_IMAGPART (t1), TREE_IMAGPART (t2)));
 
     case VECTOR_CST:
@@ -5559,6 +5562,16 @@ output_constant (tree exp, unsigned HOST_WIDE_INT size, unsigned int align,
       break;
 
     case COMPLEX_TYPE:
+      if (SCALAR_FLOAT_TYPE_P (TREE_TYPE (TREE_TYPE (exp))))
+	{
+	  tree radius, angle;
+	  ick_complex_cst_storage_parts (exp, &radius, &angle);
+	  output_constant (radius, thissize / 2, align, reverse, false);
+	  output_constant (angle, thissize / 2,
+			   min_align (align, BITS_PER_UNIT * (thissize / 2)),
+			   reverse, false);
+	  break;
+	}
       output_constant (TREE_REALPART (exp), thissize / 2, align,
 		       reverse, false);
       output_constant (TREE_IMAGPART (exp), thissize / 2,

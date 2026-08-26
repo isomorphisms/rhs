@@ -87,6 +87,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "asan.h"
 #include "gimple-range.h"
 #include "optabs-tree.h"
+#include "tree-pass.h"
 
 /* Nonzero if we are folding constants inside an initializer or a C++
    manifestly-constant-evaluated context; zero otherwise.
@@ -1688,7 +1689,17 @@ const_binop (enum tree_code code, tree type, tree arg1, tree arg2)
 	   && TREE_CODE (arg2) == REAL_CST)
 	  || (TREE_CODE (arg1) == INTEGER_CST
 	      && TREE_CODE (arg2) == INTEGER_CST))
-	return build_complex (type, arg1, arg2);
+	{
+	  tree value = build_complex (type, arg1, arg2);
+	  /* Once complex lowering has run, a folded COMPLEX_EXPR contains
+	     physical storage components.  Preserve that provenance.  */
+	  if (cfun
+	      && (cfun->curr_properties & PROP_gimple_lcx)
+	      && TREE_CODE (type) == COMPLEX_TYPE
+	      && SCALAR_FLOAT_TYPE_P (TREE_TYPE (type)))
+	    ICK_PHYSICAL_COMPLEX_CST_P (value) = 1;
+	  return value;
+	}
       return NULL_TREE;
 
     case POINTER_DIFF_EXPR:
@@ -3354,7 +3365,9 @@ operand_compare::operand_equal_p (tree type0, const_tree arg0,
 	}
 
       case COMPLEX_CST:
-	return (operand_equal_p (TREE_REALPART (arg0), TREE_REALPART (arg1),
+	return (ICK_PHYSICAL_COMPLEX_CST_P (arg0)
+		== ICK_PHYSICAL_COMPLEX_CST_P (arg1)
+		&& operand_equal_p (TREE_REALPART (arg0), TREE_REALPART (arg1),
 				 flags)
 		&& operand_equal_p (TREE_IMAGPART (arg0), TREE_IMAGPART (arg1),
 				    flags));
@@ -3969,6 +3982,7 @@ operand_compare::hash_operand (const_tree t, inchash::hash &hstate,
 		  RAW_DATA_LENGTH (t));
       return;
     case COMPLEX_CST:
+      hstate.add_int (ICK_PHYSICAL_COMPLEX_CST_P (t));
       hash_operand (TREE_REALPART (t), hstate, flags);
       hash_operand (TREE_IMAGPART (t), hstate, flags);
       return;
@@ -7654,16 +7668,23 @@ static int
 native_encode_complex (const_tree expr, unsigned char *ptr, int len, int off)
 {
   int rsize, isize;
-  tree part;
+  tree first_part, second_part;
 
-  part = TREE_REALPART (expr);
-  rsize = native_encode_expr (part, ptr, len, off);
+  if (SCALAR_FLOAT_TYPE_P (TREE_TYPE (TREE_TYPE (expr))))
+    ick_complex_cst_storage_parts (expr, &first_part, &second_part);
+  else
+    {
+      first_part = TREE_REALPART (expr);
+      second_part = TREE_IMAGPART (expr);
+    }
+
+  rsize = native_encode_expr (first_part, ptr, len, off);
   if (off == -1 && rsize == 0)
     return 0;
-  part = TREE_IMAGPART (expr);
   if (off != -1)
-    off = MAX (0, off - GET_MODE_SIZE (SCALAR_TYPE_MODE (TREE_TYPE (part))));
-  isize = native_encode_expr (part, ptr ? ptr + rsize : NULL,
+    off = MAX (0, off - GET_MODE_SIZE
+		       (SCALAR_TYPE_MODE (TREE_TYPE (second_part))));
+  isize = native_encode_expr (second_part, ptr ? ptr + rsize : NULL,
 			      len - rsize, off);
   if (off == -1 && isize != rsize)
     return 0;
@@ -8632,6 +8653,20 @@ native_interpret_complex (tree type, const unsigned char *ptr, int len)
   ipart = native_interpret_expr (etype, ptr+size, size);
   if (!ipart)
     return NULL_TREE;
+
+  if (SCALAR_FLOAT_TYPE_P (etype))
+    {
+      tree physical = build_ick_physical_complex_cst (type, rpart, ipart);
+
+      /* After complex lowering, the pair is consumed as physical storage.
+	 Before lowering, language-level folds require Cartesian components.  */
+      if (cfun && (cfun->curr_properties & PROP_gimple_lcx))
+	return physical;
+
+      tree real, imag;
+      ick_complex_cst_semantic_parts (physical, &real, &imag);
+      return build_complex (type, real, imag);
+    }
   return build_complex (type, rpart, ipart);
 }
 
@@ -13549,6 +13584,10 @@ fold_checksum_tree (const_tree expr, struct md5_ctx *ctx,
 			     TREE_STRING_LENGTH (expr), ctx);
 	  break;
 	case COMPLEX_CST:
+	  {
+	    unsigned char physical = ICK_PHYSICAL_COMPLEX_CST_P (expr);
+	    md5_process_bytes (&physical, sizeof physical, ctx);
+	  }
 	  fold_checksum_tree (TREE_REALPART (expr), ctx, ht);
 	  fold_checksum_tree (TREE_IMAGPART (expr), ctx, ht);
 	  break;
