@@ -1,21 +1,8 @@
-# Ithon sketch: LHS identifier -> provider vector(s)
-#
-# This is intentionally a language-level replacement target for the earlier
-# Python probe. Exact surface syntax should follow the Ithon compiler's current
-# accepted grammar; no Python semantics are intended here.
+#!/usr/bin/env ithon
 
-VectorEvidence ≝ {
-    vector,
-    type_info,
-    warning
-}
+from typing import Callable
 
-lhs_vector(lhs_name, models) ≝
-    observed ← lhs_name
-    pieces ← models |> map(model ⇒ model(observed))
-    vector ← pieces |> concatenate
-    {
-        vector: vector,
-        type_info: "lhs-name-model-vectors",
-        warning: "Raw provider vectors only; no RHS comparison or equality verdict."
-    }
+
+def lhs_vector(lhs_name ∈ str, model ∈ Callable[[str], list[float]]) → list[float]:
+    """Assign the literal LHS identifier a vector from one supplied model."""
+    return model(lhs_name)
