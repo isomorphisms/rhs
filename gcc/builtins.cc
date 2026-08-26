@@ -9579,7 +9579,9 @@ fold_builtin_abs (location_t loc, tree arg, tree type)
   return fold_build1_loc (loc, ABS_EXPR, type, arg);
 }
 
-/* Fold a call to builtin carg(a+bi) -> atan2(b,a).  */
+/* Fold a call to builtin carg(a+bi) -> atan2(b,a).  ICK suppresses this for
+   float, double, and long double below, but retains it for _FloatN/_FloatNx
+   types that its polar tree-complex handlers do not support.  */
 
 static tree
 fold_builtin_carg (location_t loc, tree arg, tree type)
@@ -9590,8 +9592,8 @@ fold_builtin_carg (location_t loc, tree arg, tree type)
       tree atan2_fn = mathfn_built_in (type, BUILT_IN_ATAN2);
 
       if (atan2_fn)
-        {
-  	  tree new_arg = builtin_save_expr (arg);
+	{
+	  tree new_arg = builtin_save_expr (arg);
 	  tree r_arg = fold_build1_loc (loc, REALPART_EXPR, type, new_arg);
 	  tree i_arg = fold_build1_loc (loc, IMAGPART_EXPR, type, new_arg);
 	  return build_call_expr_loc (loc, atan2_fn, 2, i_arg, r_arg);
@@ -10793,6 +10795,13 @@ fold_builtin_1 (location_t loc, tree expr, tree fndecl, tree arg0)
     break;
 
     CASE_FLT_FN (BUILT_IN_CARG):
+      /* ICK's physical complex components are polar by the time
+	 tree-complex runs.  Keep these calls intact so that pass can preserve
+	 an already-principal raw phase and normalize only phases outside
+	 [-pi,pi].  A Cartesian fold here can change +pi to -pi after float
+	 rounding.  */
+      return NULL_TREE;
+
     CASE_FLT_FN_FLOATN_NX (BUILT_IN_CARG):
       return fold_builtin_carg (loc, arg0, type);
 

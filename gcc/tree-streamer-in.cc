@@ -167,6 +167,12 @@ unpack_ts_base_value_fields (struct bitpack_d *bp, tree expr)
       CALL_EXPR_BY_DESCRIPTOR (expr) = (unsigned) bp_unpack_value (bp, 1);
       bp_unpack_value (bp, 8);
     }
+  else if (TREE_CODE (expr) == COMPLEX_CST)
+    {
+      ICK_PHYSICAL_COMPLEX_CST_P (expr)
+	= (unsigned) bp_unpack_value (bp, 1);
+      bp_unpack_value (bp, 8);
+    }
   else
     bp_unpack_value (bp, 9);
 }

@@ -1,0 +1,8 @@
+#!/usr/bin/env ithon
+
+from typing import Callable
+
+
+def lhs_vector(lhs_name ∈ str, model ∈ Callable[[str], list[float]]) → list[float]:
+    """Assign the literal LHS identifier a vector from one supplied model."""
+    return model(lhs_name)
