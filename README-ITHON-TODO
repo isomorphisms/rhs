@@ -1,0 +1,1 @@
+Replace the provisional `name_vectors.pi` sketch with code validated against the current Ithon grammar before treating it as executable. The semantic requirement is fixed; the surface syntax is not guessed here.
