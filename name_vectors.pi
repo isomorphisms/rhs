@@ -1,0 +1,21 @@
+# Ithon sketch: LHS identifier -> provider vector(s)
+#
+# This is intentionally a language-level replacement target for the earlier
+# Python probe. Exact surface syntax should follow the Ithon compiler's current
+# accepted grammar; no Python semantics are intended here.
+
+VectorEvidence ≝ {
+    vector,
+    type_info,
+    warning
+}
+
+lhs_vector(lhs_name, models) ≝
+    observed ← lhs_name
+    pieces ← models |> map(model ⇒ model(observed))
+    vector ← pieces |> concatenate
+    {
+        vector: vector,
+        type_info: "lhs-name-model-vectors",
+        warning: "Raw provider vectors only; no RHS comparison or equality verdict."
+    }
