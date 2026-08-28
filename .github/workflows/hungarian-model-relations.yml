@@ -24,6 +24,10 @@ jobs:
     steps:
       - name: Check out experiment
         uses: actions/checkout@v6
+        with:
+          filter: blob:none
+          sparse-checkout: |
+            tests
 
       - name: Set up Python
         uses: actions/setup-python@v6
