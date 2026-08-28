@@ -61,6 +61,7 @@ jobs:
             slug="${model//\//--}"
             if python -m tests.hungarian_notation.run_huggingface \
                 --model "$model" \
+                --include-vectors \
                 > "results/$slug.json" \
                 2> "results/$slug.stderr.txt"; then
               printf '%s\tpass\n' "$model" >> results/status.tsv
