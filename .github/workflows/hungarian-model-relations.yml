@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - hungarian-model-relations
+    paths:
+      - .github/workflows/hungarian-model-relations.yml
+      - tests/hungarian_notation/*.py
   workflow_dispatch:
 
 permissions:
