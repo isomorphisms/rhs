@@ -1,0 +1,77 @@
+name: Hungarian model relations
+
+on:
+  push:
+    branches:
+      - hungarian-model-relations
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      HF_HOME: ${{ runner.temp }}/huggingface
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      TOKENIZERS_PARALLELISM: "false"
+    steps:
+      - name: Check out experiment
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install CPU model runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install transformers
+
+      - name: Run each model independently
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p results
+          python -m pip freeze > results/python-packages.txt
+
+          models=(
+            microsoft/codebert-base
+            huggingface/CodeBERTa-small-v1
+            sentence-transformers/all-MiniLM-L6-v2
+            bert-base-cased
+            bert-base-uncased
+          )
+
+          failed=0
+          : > results/status.tsv
+          for model in "${models[@]}"; do
+            slug="${model//\//--}"
+            if python -m tests.hungarian_notation.run_huggingface \
+                --model "$model" \
+                > "results/$slug.json" \
+                2> "results/$slug.stderr.txt"; then
+              printf '%s\tpass\n' "$model" >> results/status.tsv
+            else
+              printf '%s\tfail\n' "$model" >> results/status.tsv
+              cat "results/$slug.stderr.txt" >&2
+              failed=1
+            fi
+          done
+
+          find "$HF_HOME/hub" -path '*/refs/main' -type f -print -exec cat {} \; \
+            > results/model-revisions.txt 2>/dev/null || true
+          exit "$failed"
+
+      - name: Upload relation reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hungarian-model-relations
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
