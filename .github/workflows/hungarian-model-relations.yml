@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: hungarian-model-relations
+  cancel-in-progress: true
+
 jobs:
   compare:
     runs-on: ubuntu-24.04
