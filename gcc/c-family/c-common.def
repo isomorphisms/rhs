@@ -38,6 +38,10 @@ along with GCC; see the file COPYING3.  If not see
    not.  */
 DEFTREECODE (C_MAYBE_CONST_EXPR, "c_maybe_const_expr", tcc_expression, 2)
 
+/* Represents an overloaded function set consumed by shared attribute
+   handling.  The C-only compiler does not produce these nodes.  */
+DEFTREECODE (OVERLOAD, "overload", tcc_exceptional, 0)
+
 /* An EXCESS_PRECISION_EXPR represents an expression evaluated in greater
    range or precision than its type.  The type of the EXCESS_PRECISION_EXPR
    is the semantic type while the operand represents what is actually being
@@ -62,6 +66,13 @@ DEFTREECODE (MINOF_EXPR, "minof_expr", tcc_expression, 1)
 /* Represents a 'sizeof' expression during C++ template expansion,
    or for the purpose of -Wsizeof-pointer-memaccess warning.  */
 DEFTREECODE (SIZEOF_EXPR, "sizeof_expr", tcc_expression, 1)
+
+/* Represents an 'alignof' expression retained by a C-family frontend.  */
+DEFTREECODE (ALIGNOF_EXPR, "alignof_expr", tcc_expression, 1)
+
+/* Represents an expression statement consumed by shared gimplification.
+   The C-only compiler does not produce these nodes.  */
+DEFTREECODE (EXPR_STMT, "expr_stmt", tcc_expression, 1)
 
 /* Like above, but enclosed in parentheses.  Used to suppress warnings.  */
 DEFTREECODE (PAREN_SIZEOF_EXPR, "paren_sizeof_expr", tcc_expression, 1)
