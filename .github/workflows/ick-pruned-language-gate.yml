@@ -62,6 +62,12 @@ jobs:
             'DEFTREECODE (OVERLOAD, "overload", tcc_exceptional, 0)' \
             gcc/c-family/c-common.def
           grep -Fqx \
+            'DEFTREECODE (TEMPLATE_DECL, "template_decl", tcc_declaration, 0)' \
+            gcc/c-family/c-common.def
+          grep -Fqx \
+            'DEFTREECODE (USING_DECL, "using_decl", tcc_declaration, 0)' \
+            gcc/c-family/c-common.def
+          grep -Fqx \
             'DEFTREECODE (ALIGNOF_EXPR, "alignof_expr", tcc_expression, 1)' \
             gcc/c-family/c-common.def
           grep -Fqx \

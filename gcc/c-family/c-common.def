@@ -42,6 +42,11 @@ DEFTREECODE (C_MAYBE_CONST_EXPR, "c_maybe_const_expr", tcc_expression, 2)
    handling.  The C-only compiler does not produce these nodes.  */
 DEFTREECODE (OVERLOAD, "overload", tcc_exceptional, 0)
 
+/* Declaration tags consumed by generic tree verification.  The C-only
+   compiler does not produce these nodes.  */
+DEFTREECODE (TEMPLATE_DECL, "template_decl", tcc_declaration, 0)
+DEFTREECODE (USING_DECL, "using_decl", tcc_declaration, 0)
+
 /* An EXCESS_PRECISION_EXPR represents an expression evaluated in greater
    range or precision than its type.  The type of the EXCESS_PRECISION_EXPR
    is the semantic type while the operand represents what is actually being
