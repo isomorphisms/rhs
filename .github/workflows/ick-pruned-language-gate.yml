@@ -1,0 +1,121 @@
+name: ICK pruned language gate
+
+on:
+  push:
+    branches:
+      - prune/cxx-objc-cobol
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  c-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Refuse pruned language trees and harnesses
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for path in \
+            gcc/cobol \
+            gcc/cp \
+            gcc/objc \
+            gcc/objcp \
+            libgcobol \
+            libobjc \
+            libstdc++-v3 \
+            libvtv \
+            c++tools \
+            gcc/testsuite/cobol.dg \
+            gcc/testsuite/g++.dg \
+            gcc/testsuite/g++.old-deja \
+            gcc/testsuite/g++.target \
+            gcc/testsuite/objc.dg \
+            gcc/testsuite/obj-c++.dg \
+            gcc/testsuite/lib/cobol-dg.exp \
+            gcc/testsuite/lib/cobol.exp \
+            gcc/testsuite/lib/g++-dg.exp \
+            gcc/testsuite/lib/g++.exp \
+            gcc/testsuite/lib/mike-g++.exp \
+            gcc/testsuite/lib/obj-c++-dg.exp \
+            gcc/testsuite/lib/obj-c++.exp \
+            gcc/testsuite/lib/objc-dg.exp \
+            gcc/testsuite/lib/objc-torture.exp \
+            gcc/testsuite/lib/objc.exp
+          do
+            test ! -e "$path"
+          done
+
+          test -d gcc/c
+          test -d gcc/c-family
+          test -d gcc/testsuite/gcc.dg
+          test -d gcc/testsuite/c-c++-common
+          test -d libcody
+          test -d libcpp
+
+          grep -Fqx \
+            'DEFTREECODE (OVERLOAD, "overload", tcc_exceptional, 0)' \
+            gcc/c-family/c-common.def
+          grep -Fqx \
+            'DEFTREECODE (TEMPLATE_DECL, "template_decl", tcc_declaration, 0)' \
+            gcc/c-family/c-common.def
+          grep -Fqx \
+            'DEFTREECODE (USING_DECL, "using_decl", tcc_declaration, 0)' \
+            gcc/c-family/c-common.def
+          grep -Fqx \
+            'DEFTREECODE (ALIGNOF_EXPR, "alignof_expr", tcc_expression, 1)' \
+            gcc/c-family/c-common.def
+          grep -Fqx \
+            'DEFTREECODE (EXPR_STMT, "expr_stmt", tcc_expression, 1)' \
+            gcc/c-family/c-common.def
+
+      - name: Install C-only cross compiler build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential flex bison texinfo \
+            libgmp-dev libmpfr-dev libmpc-dev libisl-dev libzstd-dev \
+            binutils-aarch64-linux-gnu
+
+      - name: Configure pruned C-only ICK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir build stage
+          cd build
+          ../configure \
+            --target=aarch64-linux-gnu \
+            --prefix="$GITHUB_WORKSPACE/stage" \
+            --with-as="$(command -v aarch64-linux-gnu-as)" \
+            --with-ld="$(command -v aarch64-linux-gnu-ld)" \
+            --enable-languages=c \
+            --disable-bootstrap \
+            --disable-multilib \
+            --disable-nls \
+            --disable-shared \
+            --disable-threads \
+            --without-headers \
+            --disable-libatomic \
+            --disable-libgomp \
+            --disable-libquadmath \
+            --disable-libssp \
+            --disable-libvtv
+
+      - name: Build and smoke-test C-only ICK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          make -C build -j2 all-gcc
+          make -C build install-gcc
+          ick="$GITHUB_WORKSPACE/stage/bin/aarch64-linux-gnu-gcc"
+          "$ick" --version
+          cat > /tmp/prune-smoke.c <<'EOF'
+          int add(int a, int b) { return a + b; }
+          EOF
+          "$ick" -O2 -fPIC -c /tmp/prune-smoke.c -o /tmp/prune-smoke.o
+          aarch64-linux-gnu-readelf -h /tmp/prune-smoke.o | grep -q 'Machine:.*AArch64'
