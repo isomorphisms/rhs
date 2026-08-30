@@ -1,6 +1,9 @@
 name: ICK pruned language gate
 
 on:
+  push:
+    branches:
+      - prune/cxx-objc-cobol
   pull_request:
   workflow_dispatch:
 
