@@ -29,6 +29,7 @@ jobs:
             libgcobol \
             libobjc \
             libstdc++-v3 \
+            libvtv \
             c++tools \
             gcc/testsuite/cobol.dg \
             gcc/testsuite/g++.dg \
