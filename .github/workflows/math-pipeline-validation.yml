@@ -1,0 +1,25 @@
+name: Exact theorem-aware math receipts
+
+on:
+  push:
+    branches:
+      - validation/theorem-aware-math-receipts
+  pull_request:
+    branches:
+      - mean-what-you-say
+    paths:
+      - math_pipeline_validation.py
+      - test_math_pipeline_validation.py
+      - docs/math-pipeline-validation.md
+      - .github/workflows/math-pipeline-validation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  exact-receipt-validation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Run exact positive and hostile receipts
+        run: python3 -m unittest -v test_math_pipeline_validation.py
