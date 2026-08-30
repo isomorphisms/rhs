@@ -35,8 +35,14 @@ successful core check.  Unification records expose the resolved indices;
 named-theorem records expose the theorem, typed hypotheses, and
 `result=solved`.  Unknown trace vocabulary fails closed.
 
-The execution receipt must also contain the first failing stage and stable
-diagnostic code for every hostile case.  A fragment mock must say
+Hostile candidates have separate receipts so a backend cannot fabricate
+compiler-negative evidence in its positive execution receipt.  Every hostile
+receipt binds the exact `.idric` bytes; backend-owned cases additionally bind
+the rejected one-step artifact or pseudo-ISA bytes.  RHS requires one exact
+`FAIL / diagnostic=E_*` at the first boundary and dependency-blocked `SKIP`
+rows afterward.
+
+A fragment mock must say
 `hardware_execution = SKIP` and `host_semantic_execution = PASS`; RHS will
 reject a receipt that renames host interpretation as hardware execution.  An
 x86 receipt must bind a generated ELF hash and record
@@ -48,3 +54,6 @@ Run the exact self-tests with:
 ```text
 python3 -m unittest -v test_math_pipeline_validation.py
 ```
+
+The command-line validator takes the checked artifact, positive execution
+receipt, and hostile-receipt directory in that order.

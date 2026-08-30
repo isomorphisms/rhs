@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from math_pipeline_validation import ReceiptError, validate_files
+from math_pipeline_validation import ReceiptError, validate_complete_files, validate_files
 
 
 def coordinates(first: int, second: int, third: int, last: int) -> str:
@@ -206,12 +206,84 @@ def receipt_text(artifact_digest: str, *, target: str = "x86_64-linux-direct-elf
             f"observation\tvector\tsphere_after\tR128\t128\texact_integer\t{SPHERE}",
         ]
     )
-    rows.extend(
-        f"rejection\t{case}\t{stage}\t{code}"
-        for case, (stage, code) in REJECTIONS.items()
-    )
     rows.append("end")
     return "\n".join(rows) + "\n"
+
+
+def write_hostile_receipts(directory: Path) -> None:
+    candidate_cases = {
+        "malformed_backend_operation": ("one_step_artifact", "one-step"),
+        "pseudo_isa_opcode_type_mismatch": ("pseudo_isa", "pseudo-isa"),
+        "forbidden_target_fallback": ("pseudo_isa", "pseudo-isa"),
+    }
+    common = [
+        "source_parse",
+        "constraint_generation",
+        "constraint_resolution",
+        "core_typecheck",
+        "one_step_form",
+        "backend_plan",
+        "target_codegen",
+    ]
+    for case, (failed_stage, code) in REJECTIONS.items():
+        if failed_stage == "rhs_validation":
+            continue
+        source = directory / f"hostile-{case}.idric"
+        source.write_text(f"hostile source: {case}\n", encoding="utf-8")
+        target = (
+            "fragment-mock:mali-g57-valhall"
+            if failed_stage in {"host_semantic_execution", "target_codegen"}
+            and case != "malformed_backend_operation"
+            else "x86_64-linux-direct-elf"
+        )
+        stages = common + (
+            ["hardware_execution", "host_semantic_execution"]
+            if target.startswith("fragment-mock:")
+            else ["native_execution"]
+        )
+        rows = [
+            "MATH_BACKEND_EXECUTION\t1",
+            "artifact_sha256\t" + "e" * 64,
+            f"case_source_sha256\t{sha256(source.read_bytes()).hexdigest()}",
+        ]
+        if case in candidate_cases:
+            kind, suffix = candidate_cases[case]
+            candidate = directory / f"hostile-{case}.{suffix}"
+            candidate.write_text(f"rejected {kind}: {case}\n", encoding="utf-8")
+            rows.extend(
+                [
+                    f"case_candidate_kind\t{kind}",
+                    f"case_candidate_sha256\t{sha256(candidate.read_bytes()).hexdigest()}",
+                ]
+            )
+        rows.extend(
+            [
+                "compiler_head\tisomorphisms/Idric\t" + "d" * 40,
+                "backend_head\tisomorphisms/backend\t" + "b" * 40,
+                f"target\t{target}",
+            ]
+        )
+        failed_index = stages.index(failed_stage)
+        for index, stage in enumerate(stages):
+            if stage == failed_stage:
+                rows.append(f"stage\t{stage}\tFAIL\tdiagnostic={code}")
+            elif (
+                target.startswith("fragment-mock:")
+                and failed_stage == "host_semantic_execution"
+                and stage == "hardware_execution"
+            ):
+                rows.append(
+                    "stage\thardware_execution\tSKIP\t"
+                    "not_applicable=fragment_mock_not_hardware"
+                )
+            elif index < failed_index:
+                rows.append(f"stage\t{stage}\tPASS\tchecked")
+            else:
+                rows.append(f"stage\t{stage}\tSKIP\tblocked_by={failed_stage}")
+        rows.append("end")
+        (directory / f"hostile-{case}.tsv").write_text(
+            "\n".join(rows) + "\n", encoding="utf-8"
+        )
 
 
 class MathPipelineValidationTests(unittest.TestCase):
@@ -310,18 +382,44 @@ class MathPipelineValidationTests(unittest.TestCase):
 
     def test_missing_hostile_case_is_a_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            artifact, receipt = self.write_pair(Path(temporary))
-            receipt.write_text(
-                "\n".join(
-                    line
-                    for line in receipt.read_text(encoding="utf-8").splitlines()
-                    if not line.startswith("rejection\ttheorem_ambiguous\t")
-                )
-                + "\n",
+            root = Path(temporary)
+            artifact, receipt = self.write_pair(root)
+            hostile = root / "hostile"
+            hostile.mkdir()
+            write_hostile_receipts(hostile)
+            (hostile / "hostile-theorem_ambiguous.tsv").unlink()
+            with self.assertRaisesRegex(ReceiptError, "missing hostile receipt"):
+                validate_complete_files(artifact, receipt, hostile)
+
+    def test_hostile_receipts_bind_the_rejected_source_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact, receipt = self.write_pair(root)
+            hostile = root / "hostile"
+            hostile.mkdir()
+            write_hostile_receipts(hostile)
+            source = hostile / "hostile-theorem_absent.idric"
+            source.write_text("different hostile source\n", encoding="utf-8")
+            with self.assertRaisesRegex(ReceiptError, "not bound to its source bytes"):
+                validate_complete_files(artifact, receipt, hostile)
+
+    def test_downstream_pass_after_hostile_failure_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact, receipt = self.write_pair(root)
+            hostile = root / "hostile"
+            hostile.mkdir()
+            write_hostile_receipts(hostile)
+            failure = hostile / "hostile-theorem_absent.tsv"
+            failure.write_text(
+                failure.read_text(encoding="utf-8").replace(
+                    "core_typecheck\tSKIP\tblocked_by=constraint_resolution",
+                    "core_typecheck\tPASS\tunchecked continuation",
+                ),
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(ReceiptError, "missing hostile rejection"):
-                validate_files(artifact, receipt)
+            with self.assertRaisesRegex(ReceiptError, "fabricated a downstream result"):
+                validate_complete_files(artifact, receipt, hostile)
 
 
 if __name__ == "__main__":

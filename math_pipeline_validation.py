@@ -497,6 +497,9 @@ class VectorObservation:
 @dataclass(frozen=True)
 class ExecutionReceipt:
     artifact_sha256: str
+    case_source_sha256: str | None
+    case_candidate_kind: str | None
+    case_candidate_sha256: str | None
     compiler_repo: str
     compiler_head: str
     backend_repo: str
@@ -505,6 +508,7 @@ class ExecutionReceipt:
     plans: Mapping[str, str]
     temporaries: Mapping[str, str]
     stages: Mapping[str, str]
+    stage_details: Mapping[str, str]
     fallbacks: Mapping[str, str]
     elf_sha256: str | None
     scalars: Mapping[str, int]
@@ -515,6 +519,9 @@ class ExecutionReceipt:
     def parse(cls, path: Path) -> "ExecutionReceipt":
         records = _records(path, EXECUTION_HEADER)
         artifact_digest: str | None = None
+        case_source_digest: str | None = None
+        case_candidate_kind: str | None = None
+        case_candidate_digest: str | None = None
         compiler_repo: str | None = None
         compiler_head: str | None = None
         backend_repo: str | None = None
@@ -523,6 +530,7 @@ class ExecutionReceipt:
         plans: dict[str, str] = {}
         temporaries: dict[str, str] = {}
         stages: dict[str, str] = {}
+        stage_details: dict[str, str] = {}
         fallbacks: dict[str, str] = {}
         elf_digest: str | None = None
         scalars: dict[str, int] = {}
@@ -537,6 +545,37 @@ class ExecutionReceipt:
                 if artifact_digest is not None:
                     raise ReceiptError(f"wire_format:{line_number}: duplicate artifact hash")
                 artifact_digest = fields[1]
+            elif kind == "case_source_sha256":
+                if len(fields) != 2 or not HEX_64.fullmatch(fields[1]):
+                    raise ReceiptError(
+                        f"provenance:{line_number}: malformed hostile source hash"
+                    )
+                if case_source_digest is not None:
+                    raise ReceiptError(
+                        f"provenance:{line_number}: duplicate hostile source hash"
+                    )
+                case_source_digest = fields[1]
+            elif kind == "case_candidate_kind":
+                allowed_kinds = {"one_step_artifact", "pseudo_isa"}
+                if len(fields) != 2 or fields[1] not in allowed_kinds:
+                    raise ReceiptError(
+                        f"provenance:{line_number}: malformed hostile candidate kind"
+                    )
+                if case_candidate_kind is not None:
+                    raise ReceiptError(
+                        f"provenance:{line_number}: duplicate hostile candidate kind"
+                    )
+                case_candidate_kind = fields[1]
+            elif kind == "case_candidate_sha256":
+                if len(fields) != 2 or not HEX_64.fullmatch(fields[1]):
+                    raise ReceiptError(
+                        f"provenance:{line_number}: malformed hostile candidate hash"
+                    )
+                if case_candidate_digest is not None:
+                    raise ReceiptError(
+                        f"provenance:{line_number}: duplicate hostile candidate hash"
+                    )
+                case_candidate_digest = fields[1]
             elif kind == "compiler_head":
                 if len(fields) != 3 or not HEX_40.fullmatch(fields[2]):
                     raise ReceiptError(f"provenance:{line_number}: malformed compiler head")
@@ -576,6 +615,7 @@ class ExecutionReceipt:
                 if name in stages:
                     raise ReceiptError(f"stages:{line_number}: duplicate stage {name}")
                 stages[name] = fields[2]
+                stage_details[name] = fields[3]
             elif kind == "fallback":
                 if len(fields) != 3 or fields[2] != "ABSENT":
                     raise ReceiptError(
@@ -638,8 +678,15 @@ class ExecutionReceipt:
             raise ReceiptError("provenance: missing exact backend head")
         if target is None:
             raise ReceiptError("backend_plan: missing target")
+        if (case_candidate_kind is None) != (case_candidate_digest is None):
+            raise ReceiptError(
+                "provenance: hostile candidate kind and hash must appear together"
+            )
         return cls(
             artifact_digest,
+            case_source_digest,
+            case_candidate_kind,
+            case_candidate_digest,
             compiler_repo,
             compiler_head,
             backend_repo,
@@ -648,6 +695,7 @@ class ExecutionReceipt:
             plans,
             temporaries,
             stages,
+            stage_details,
             fallbacks,
             elf_digest,
             scalars,
@@ -707,6 +755,12 @@ EXPECTED_REJECTIONS = {
         ("host_semantic_execution", "E_OPCODE_TYPE"),
     "forbidden_target_fallback": ("target_codegen", "E_FALLBACK"),
     "plan_changed_meaning": ("rhs_validation", "E_MEANING_CHANGED"),
+}
+
+HOSTILE_CANDIDATE_CASES = {
+    "malformed_backend_operation",
+    "pseudo_isa_opcode_type_mismatch",
+    "forbidden_target_fallback",
 }
 
 # The same-input boundary is deliberately exact.  A backend cannot substitute
@@ -914,19 +968,17 @@ def validate_r128_pipeline(
     if artifact.values["x"].coordinates[127] == 0:
         raise ReceiptError("rhs_validation: hostile far-end coordinate was erased")
 
-    for case, (expected_stage, expected_code) in EXPECTED_REJECTIONS.items():
-        rejection = receipt.rejections.get(case)
-        if rejection is None:
-            raise ReceiptError(f"rhs_validation: missing hostile rejection {case}")
-        observed_stage, observed_code = rejection
-        if observed_stage != expected_stage or observed_code != expected_code:
+    # Raw positive backend receipts do not own compiler-negative evidence.
+    # When an integration receipt carries summaries, accept only exact known
+    # summaries; complete hostile coverage is established from the separately
+    # bound failing-candidate receipts below.
+    for case, (observed_stage, observed_code) in receipt.rejections.items():
+        expected = EXPECTED_REJECTIONS.get(case)
+        if expected != (observed_stage, observed_code):
             raise ReceiptError(
-                f"rhs_validation: {case} failed at {observed_stage}/{observed_code}, "
-                f"expected first boundary {expected_stage}/{expected_code}"
+                f"rhs_validation: unverified hostile summary "
+                f"{case}/{observed_stage}/{observed_code}"
             )
-
-    if set(receipt.rejections) != set(EXPECTED_REJECTIONS):
-        raise ReceiptError("rhs_validation: hostile rejection set changed")
 
 
 def validate_files(artifact_path: Path, receipt_path: Path) -> None:
@@ -936,12 +988,159 @@ def validate_files(artifact_path: Path, receipt_path: Path) -> None:
     )
 
 
-def _main(arguments: Sequence[str]) -> int:
-    if len(arguments) != 3:
-        raise SystemExit(
-            f"usage: {arguments[0]} CHECKED_ONE_STEP_ARTIFACT BACKEND_RECEIPT"
+def _hostile_stage_order(target: str) -> tuple[str, ...]:
+    common = (
+        "source_parse",
+        "constraint_generation",
+        "constraint_resolution",
+        "core_typecheck",
+        "one_step_form",
+        "backend_plan",
+        "target_codegen",
+    )
+    if target == "x86_64-linux-direct-elf":
+        return common + ("native_execution",)
+    if target.startswith("fragment-mock:"):
+        return common + ("hardware_execution", "host_semantic_execution")
+    raise ReceiptError(f"backend_plan: unsupported hostile target {target}")
+
+
+def _verify_hostile_stages(
+    case: str,
+    expected_stage: str,
+    expected_code: str,
+    receipt: ExecutionReceipt,
+) -> None:
+    order = _hostile_stage_order(receipt.target)
+    if set(receipt.stages) != set(order):
+        raise ReceiptError(f"{expected_stage}: {case} has incomplete stage coverage")
+    if expected_stage not in order:
+        raise ReceiptError(
+            f"{expected_stage}: {case} cannot fail on target {receipt.target}"
         )
-    validate_files(Path(arguments[1]), Path(arguments[2]))
+    failures = [name for name, status in receipt.stages.items() if status == "FAIL"]
+    if failures != [expected_stage]:
+        raise ReceiptError(
+            f"{expected_stage}: {case} must have exactly one first FAIL at "
+            f"{expected_stage}, observed {failures}"
+        )
+    expected_detail = f"diagnostic={expected_code}"
+    if receipt.stage_details[expected_stage] != expected_detail:
+        raise ReceiptError(
+            f"{expected_stage}: {case} must report exact {expected_detail}"
+        )
+
+    failed_index = order.index(expected_stage)
+    for index, stage in enumerate(order):
+        if stage == expected_stage:
+            continue
+        status = receipt.stages[stage]
+        detail = receipt.stage_details[stage]
+        fragment_parallel_skip = (
+            receipt.target.startswith("fragment-mock:")
+            and expected_stage == "host_semantic_execution"
+            and stage == "hardware_execution"
+        )
+        if fragment_parallel_skip:
+            if status != "SKIP" or detail != "not_applicable=fragment_mock_not_hardware":
+                raise ReceiptError(
+                    "hardware_execution: fragment hostile receipt claimed hardware"
+                )
+        elif index < failed_index:
+            if status != "PASS":
+                raise ReceiptError(
+                    f"{stage}: {case} did not pass before {expected_stage} failed"
+                )
+        else:
+            if status != "SKIP" or not detail.startswith("blocked_by="):
+                raise ReceiptError(
+                    f"{stage}: {case} fabricated a downstream result after failure"
+                )
+            blocker = detail.removeprefix("blocked_by=")
+            if blocker not in order[:index] or receipt.stages[blocker] == "PASS":
+                raise ReceiptError(
+                    f"{stage}: {case} names invalid dependency blocker {blocker}"
+                )
+
+
+def validate_hostile_receipts(
+    artifact: OneStepArtifact,
+    directory: Path,
+) -> None:
+    """Validate separately executed negative candidates and their exact bytes."""
+
+    for case, (stage, code) in EXPECTED_REJECTIONS.items():
+        if stage == "rhs_validation":
+            # Meaning drift is exercised by corrupting an otherwise valid
+            # observation and requiring the independent exact comparison to fail.
+            continue
+        receipt_path = directory / f"hostile-{case}.tsv"
+        source_path = directory / f"hostile-{case}.idric"
+        if not receipt_path.is_file():
+            raise ReceiptError(f"rhs_validation: missing hostile receipt {case}")
+        if not source_path.is_file():
+            raise ReceiptError(f"rhs_validation: missing hostile source {case}")
+        receipt = ExecutionReceipt.parse(receipt_path)
+        if receipt.compiler_repo != artifact.compiler_repo or (
+            receipt.compiler_head != artifact.compiler_head
+        ):
+            raise ReceiptError(f"provenance: {case} changed the compiler head")
+        source_digest = sha256(source_path.read_bytes()).hexdigest()
+        if receipt.case_source_sha256 != source_digest:
+            raise ReceiptError(f"provenance: {case} is not bound to its source bytes")
+
+        if case in HOSTILE_CANDIDATE_CASES:
+            if receipt.case_candidate_kind is None or receipt.case_candidate_sha256 is None:
+                raise ReceiptError(f"provenance: {case} is not bound to rejected bytes")
+            suffix = {
+                "one_step_artifact": "one-step",
+                "pseudo_isa": "pseudo-isa",
+            }[receipt.case_candidate_kind]
+            candidate_path = directory / f"hostile-{case}.{suffix}"
+            if not candidate_path.is_file():
+                raise ReceiptError(f"provenance: missing rejected input for {case}")
+            candidate_digest = sha256(candidate_path.read_bytes()).hexdigest()
+            if receipt.case_candidate_sha256 != candidate_digest:
+                raise ReceiptError(
+                    f"provenance: {case} is not bound to rejected candidate bytes"
+                )
+        elif receipt.case_candidate_kind is not None:
+            raise ReceiptError(
+                f"provenance: compiler-owned hostile case {case} has backend candidate bytes"
+            )
+
+        if (
+            receipt.plans
+            or receipt.temporaries
+            or receipt.scalars
+            or receipt.vectors
+            or receipt.rejections
+            or receipt.elf_sha256 is not None
+        ):
+            raise ReceiptError(
+                f"{stage}: failed hostile candidate {case} fabricated downstream output"
+            )
+        _verify_hostile_stages(case, stage, code, receipt)
+
+
+def validate_complete_files(
+    artifact_path: Path,
+    receipt_path: Path,
+    hostile_directory: Path,
+) -> None:
+    artifact = OneStepArtifact.parse(artifact_path)
+    receipt = ExecutionReceipt.parse(receipt_path)
+    validate_r128_pipeline(artifact, receipt)
+    validate_hostile_receipts(artifact, hostile_directory)
+
+
+def _main(arguments: Sequence[str]) -> int:
+    if len(arguments) != 4:
+        raise SystemExit(
+            f"usage: {arguments[0]} CHECKED_ONE_STEP_ARTIFACT BACKEND_RECEIPT "
+            "HOSTILE_RECEIPT_DIRECTORY"
+        )
+    validate_complete_files(Path(arguments[1]), Path(arguments[2]), Path(arguments[3]))
     print("rhs_validation\tPASS\texact R128 mathematical meaning preserved")
     return 0
 
