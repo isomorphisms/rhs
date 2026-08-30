@@ -58,6 +58,16 @@ jobs:
           test -d libcody
           test -d libcpp
 
+          grep -Fqx \
+            'DEFTREECODE (OVERLOAD, "overload", tcc_exceptional, 0)' \
+            gcc/c-family/c-common.def
+          grep -Fqx \
+            'DEFTREECODE (ALIGNOF_EXPR, "alignof_expr", tcc_expression, 1)' \
+            gcc/c-family/c-common.def
+          grep -Fqx \
+            'DEFTREECODE (EXPR_STMT, "expr_stmt", tcc_expression, 1)' \
+            gcc/c-family/c-common.def
+
       - name: Install C-only cross compiler build dependencies
         run: |
           sudo apt-get update
