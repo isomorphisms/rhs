@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Refuse pruned language trees
+      - name: Refuse pruned language trees and harnesses
         shell: bash
         run: |
           set -euxo pipefail
@@ -35,7 +35,17 @@ jobs:
             gcc/testsuite/g++.old-deja \
             gcc/testsuite/g++.target \
             gcc/testsuite/objc.dg \
-            gcc/testsuite/obj-c++.dg
+            gcc/testsuite/obj-c++.dg \
+            gcc/testsuite/lib/cobol-dg.exp \
+            gcc/testsuite/lib/cobol.exp \
+            gcc/testsuite/lib/g++-dg.exp \
+            gcc/testsuite/lib/g++.exp \
+            gcc/testsuite/lib/mike-g++.exp \
+            gcc/testsuite/lib/obj-c++-dg.exp \
+            gcc/testsuite/lib/obj-c++.exp \
+            gcc/testsuite/lib/objc-dg.exp \
+            gcc/testsuite/lib/objc-torture.exp \
+            gcc/testsuite/lib/objc.exp
           do
             test ! -e "$path"
           done
