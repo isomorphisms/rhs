@@ -1,0 +1,66 @@
+name: Hungarian model benchmark
+
+on:
+  push:
+    branches:
+      - mean-what-you-say
+    paths:
+      - tests/hungarian_notation/**
+      - requirements-models.txt
+      - .github/workflows/hungarian-models.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: [self-hosted, linux, debian]
+    timeout-minutes: 90
+    env:
+      HF_HOME: ${{ runner.temp }}/rhs-huggingface
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Record exact source and host
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git rev-parse HEAD
+          python3 --version
+          uname -a
+
+      - name: Run deterministic controls
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 -m unittest -v \
+            test_vector_transforms.py \
+            tests.hungarian_notation.test_probe
+
+      - name: Install pinned model dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements-models.txt
+
+      - name: Run first real model comparison
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p model-results
+          .venv/bin/python -m tests.hungarian_notation.run_huggingface \
+            --model bert-base-cased \
+            --model bert-base-uncased \
+            --model microsoft/codebert-base \
+            | tee model-results/hungarian.json
+          sha256sum model-results/hungarian.json
+
+      - name: Preserve benchmark receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: hungarian-models-${{ github.sha }}
+          path: model-results/hungarian.json
+          if-no-files-found: error
