@@ -1,0 +1,137 @@
+{
+  "schema": "underhanded-c-initial-baseline-v1",
+  "scope": "standalone C counterexamples, NOT RHS detection or full entries",
+  "timestamp_utc": "2026-09-11T22:18:49.896182+00:00",
+  "environment": {
+    "system": "Linux",
+    "machine": "x86_64",
+    "release": "6.18.35",
+    "distribution": {
+      "NAME": "Debian GNU/Linux",
+      "ID": "debian",
+      "PRETTY_NAME": "Debian GNU/Linux 13 (trixie)",
+      "VERSION_ID": "13",
+      "VERSION": "13 (trixie)",
+      "VERSION_CODENAME": "trixie",
+      "DEBIAN_VERSION_FULL": "13.3",
+      "HOME_URL": "https://www.debian.org/",
+      "SUPPORT_URL": "https://www.debian.org/support",
+      "BUG_REPORT_URL": "https://bugs.debian.org/"
+    }
+  },
+  "source_manifest_sha256": "fda730a984f9174e9c8d1ea4135d384ab221b289411f8d7fca809a95c4b6e76c",
+  "source_manifest_hash_rule": "SHA256 of UTF-8 JSON source_sha256, sorted keys, separators comma and colon, no trailing newline",
+  "source_sha256": {
+    "01_xor_swap_alias.c": "62dbf1d09fe893bbc6dab469a14a936758f1ec637f8b98615a5f9c5478745d22",
+    "02_macro_precedence.c": "60258120b9787fcbd83d24e60e0eecf0f4aa5b9d494a0b0b365a7d114e0a5ece",
+    "03_redaction_width.c": "2ce2053e5fb38df71702184de333cebb6865fb13d9c7a79428f35d4785cdba7c",
+    "04_bitwise_truth.c": "084625e2eac69c8ef11bcf548e7070ac3a8506f8c72f6a2dc9cbab2031f1aa77",
+    "05_equality_identity.c": "f251baf77671a6ef444e32e3de7e301ff34b54678dda918fb0c36b937b8d6cc4",
+    "06_macro_repeated_effect.c": "8c769074475bc88eb98a308d4473955a98c6d090dea142c1937347c5afe21fd1",
+    "07_nan_fail_open.c": "6d4c7df46da7a303d91c50228990cbad7ce92d80e2d734109915931d02c029d3",
+    "08_error_flag_copy.c": "c3219a26fb8a2578906be184ef12b471535e7c85ee1f27ec0f656ddb020e9a8f",
+    "fixture.h": "a77b8e14c0a60d38716cca81a83de67187ffd886b5fd9aa7a684c68889cfc9e6",
+    "run.py": "bff594c3439357d97a93449e154e9460ac5104c529a1e42ef21af2fd45b3a30e"
+  },
+  "compilers": [
+    {
+      "executable": "gcc",
+      "version": "gcc (Debian 14.2.0-19) 14.2.0"
+    },
+    {
+      "executable": "clang",
+      "version": "clang version 17.0.0 (https://github.com/swiftlang/llvm-project.git 10999b6d034fe318f3d56c83bddb6572593a8bb0)"
+    }
+  ],
+  "flags": [
+    "-std=c11",
+    "-Wall",
+    "-Wextra",
+    "-Wpedantic",
+    "-Wconversion",
+    "-O0 or -O2",
+    "-DUSE_CORRECTED=0 or 1",
+    "-lm"
+  ],
+  "summary": {
+    "bad_rejected": 32,
+    "corrected_accepted": 32,
+    "unsupported": 0,
+    "failures": 0
+  },
+  "cases": [
+    {
+      "case": "01_xor_swap_alias",
+      "executions": 8,
+      "all_expected": true,
+      "compiler_warnings_observed": false
+    },
+    {
+      "case": "02_macro_precedence",
+      "executions": 8,
+      "all_expected": true,
+      "compiler_warnings_observed": true
+    },
+    {
+      "case": "03_redaction_width",
+      "executions": 8,
+      "all_expected": true,
+      "compiler_warnings_observed": false
+    },
+    {
+      "case": "04_bitwise_truth",
+      "executions": 8,
+      "all_expected": true,
+      "compiler_warnings_observed": false
+    },
+    {
+      "case": "05_equality_identity",
+      "executions": 8,
+      "all_expected": true,
+      "compiler_warnings_observed": false
+    },
+    {
+      "case": "06_macro_repeated_effect",
+      "executions": 8,
+      "all_expected": true,
+      "compiler_warnings_observed": false
+    },
+    {
+      "case": "07_nan_fail_open",
+      "executions": 8,
+      "all_expected": true,
+      "compiler_warnings_observed": false
+    },
+    {
+      "case": "08_error_flag_copy",
+      "executions": 8,
+      "all_expected": true,
+      "compiler_warnings_observed": true
+    }
+  ],
+  "pending_followers": [
+    {
+      "target": "Hetzner x86-64 Debian",
+      "status": "not-run"
+    },
+    {
+      "target": "GitHub Actions self-hosted Linux Debian",
+      "status": "not-run"
+    },
+    {
+      "target": "Android ARMv7 phone runtime",
+      "status": "not-run"
+    },
+    {
+      "target": "Android AArch64 tablet runtime",
+      "status": "not-run"
+    }
+  ],
+  "follower_instruction": "Run run.py from the exact source_sha256 artifact, retaining real compiler identities and per-case receipt; do not infer physical-device acceptance from a host or emulator run.",
+  "limitations": [
+    "No RHS detector evaluated",
+    "No full contest entry reproduced",
+    "No physical-device execution",
+    "No new autonomous-detection claim"
+  ]
+}
