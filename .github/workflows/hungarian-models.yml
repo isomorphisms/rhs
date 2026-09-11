@@ -5,9 +5,9 @@ on:
     branches:
       - mean-what-you-say
     paths:
-      - tests/hungarian_notation/**
-      - requirements-models.txt
-      - .github/workflows/hungarian-models.yml
+      - 'tests/hungarian_notation/**'
+      - 'requirements-models.txt'
+      - '.github/workflows/hungarian-models.yml'
   workflow_dispatch:
 
 permissions:
@@ -18,7 +18,7 @@ jobs:
     runs-on: [self-hosted, linux, debian]
     timeout-minutes: 90
     env:
-      HF_HOME: ${{ runner.temp }}/rhs-huggingface
+      HF_HOME: /tmp/rhs-huggingface
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
