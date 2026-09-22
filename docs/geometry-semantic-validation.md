@@ -34,6 +34,21 @@ observed output, tolerance or exactness rule, and independently justified
 expected behavior separate. Include dishonest or misleading names as negative
 controls instead of letting a model's agreement define ground truth.
 
+## Existing bounded executable slice
+
+[`vector_transforms.py`](../vector_transforms.py) already supplies two exact
+repository-local operations: reflection through a coordinate hyperplane and
+rotation by quarter turns in a selected coordinate plane.
+[`test_vector_transforms.py`](../test_vector_transforms.py) checks the selected
+coordinate behavior, reflection involution, rotation direction, four-turn
+identity, squared-length preservation, and invalid coordinate inputs.
+
+That fixture is useful precisely because its claim is narrow. It does not
+establish arbitrary-angle Givens rotations, general Householder maps, quaternion
+semantics, compact-direction encoding, affine-hyperplane scale or orientation,
+or coordinate-invariant classification. Those cases still require fixtures from
+their semantic owners. No model or classifier is ground truth for this slice.
+
 ## Project links
 
 - [Idriç semantic inventory](https://github.com/isomorphisms/Idric/issues/108)

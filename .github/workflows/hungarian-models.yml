@@ -6,6 +6,8 @@ on:
       - mean-what-you-say
     paths:
       - 'tests/hungarian_notation/**'
+      - 'vector_transforms.py'
+      - 'test_vector_transforms.py'
       - 'requirements-models.txt'
       - '.github/workflows/hungarian-models.yml'
   workflow_dispatch:
@@ -15,7 +17,7 @@ permissions:
 
 jobs:
   benchmark:
-    runs-on: [self-hosted, linux, debian]
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       HF_HOME: /tmp/rhs-huggingface
@@ -59,7 +61,7 @@ jobs:
           sha256sum model-results/hungarian.json
 
       - name: Preserve benchmark receipt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: hungarian-models-${{ github.sha }}
           path: model-results/hungarian.json

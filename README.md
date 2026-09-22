@@ -16,7 +16,10 @@ agree or mislead.
 - `tests/underhanded_c/` records adversarial programs whose apparent purpose and
   actual behavior are independently documented. These are negative controls for
   source-level semantic review.
-- Ordinary well-named code is needed as the corresponding positive control.
+- [`test_vector_transforms.py`](test_vector_transforms.py) exercises
+  [`vector_transforms.py`](vector_transforms.py) as a small ordinary well-named
+  positive control: exact coordinate reflections, exact quarter turns, and
+  squared-length preservation.
 
 A model score is evidence about the model, not a proof about the program.
 Ground truth should come from independently checkable behavior or fixtures where
@@ -41,3 +44,12 @@ some vector experiments. [`docs/geometry-semantic-validation.md`](docs/geometry-
 connects rotation, sphere, reflection, and hyperplane claims to controlled RHS
 positive and negative cases. `keyboard-glyphs/` and `docs/` contain earlier
 semantic fixtures that remain useful but do not define the architecture.
+
+The first five-model Hungarian relation run is preserved as dated evidence in
+[`tests/hungarian_notation/results/2026-08-28.md`](tests/hungarian_notation/results/2026-08-28.md).
+It measures the named models under one declared probe; it does not supply ground
+truth about the program names.
+
+The current `.py` source and runners are existing Python migration debt, not the
+permanent RHS implementation language. `name_vectors.pi` is a provisional Ithon
+sketch and is not presently backed by a repository-local Ithon frontend check.
