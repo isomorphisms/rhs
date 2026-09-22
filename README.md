@@ -37,5 +37,7 @@ that still matters is tracked in ICK.
 `semantic_equality.py` supplies the deliberately small same-input/two-sides
 observation boundary. `equality_mocks.py` contains dishonest controls for testing
 consumers. `vector_transforms.py` contains exact geometric utilities used by
-some vector experiments. `keyboard-glyphs/` and `docs/` contain earlier semantic
-fixtures that remain useful but do not define the architecture.
+some vector experiments. [`docs/geometry-semantic-validation.md`](docs/geometry-semantic-validation.md)
+connects rotation, sphere, reflection, and hyperplane claims to controlled RHS
+positive and negative cases. `keyboard-glyphs/` and `docs/` contain earlier
+semantic fixtures that remain useful but do not define the architecture.
